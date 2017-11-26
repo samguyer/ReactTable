@@ -1,11 +1,17 @@
 #include <adel.h>
 #include "SSD1306Wire.h"
+class Pattern;
 #include <FastLED.h>
 
-// ===== Global configuration ======================
+// ===== Global configuration =====================================
 
-#define CELL_COLS 24
-#define CELL_ROWS 24
+#define CELL_COLS 12
+#define CELL_ROWS 12
+
+#define IMAGE_WIDTH_SCALE  5
+#define IMAGE_HEIGHT_SCALE 3
+#define IMAGE_WIDTH  ((CELL_COLS+2) * IMAGE_WIDTH_SCALE)
+#define IMAGE_HEIGHT ((CELL_ROWS+2) * IMAGE_HEIGHT_SCALE)
 
 #define ROTARY_A_PIN 19
 #define ROTARY_B_PIN 18
@@ -26,6 +32,8 @@ int IR_INPUT[] = { 35, 34, 39, 36 };
 #define Y_PIN 33
 #define Z_PIN 25
 
+#define MIC_PIN 13
+
 #define LED_PIN 17
 
 #define NUM_CELLS 61
@@ -33,11 +41,11 @@ int IR_INPUT[] = { 35, 34, 39, 36 };
 #define NUM_LEDS (NUM_CELLS * LEDS_PER_CELL)
 #define FRAMES_PER_SECOND 60
 
-// ===== Display ===================================
+// ===== OLDE Display =============================================
 
-SSD1306Wire  display(0x3c, SDA_PIN, SCL_PIN); // display(Address, SDA, SCL)
+SSD1306Wire  display(0x3c, SDA_PIN, SCL_PIN);
 
-// ===== LED grid information =============
+// ===== LED strip information ====================================
 
 CRGB g_LEDs[NUM_LEDS];
 
@@ -45,81 +53,6 @@ uint8_t g_Brightness = 50;
 
 #define COLOR_ORDER GRB
 #define CHIPSET     WS2812
-
-// ===== Surface ==========================
-
-template<int W, int H>
-class IRSurface
-{
-private:
-
-    uint8_t m_values[W][H];
-
-public:
-
-    IRSurface()
-    {
-        for (int i = 0; i < W; i++) {
-            for (int j = 0; j < H; j++) {
-                m_values[i][j] = 0;
-            }
-        }
-    }
-
-    /** Cubic Hermite for discrete space
-     *
-     *  Compute an interpolated value between B and C at a distance proportional
-     *  to t. A and D are neighboring values that affect the curve near the edges
-     *  (A is on the other side of B; D is on the other side of C):
-     *
-     *    A ....... B ....... C ....... D
-     *              |<-t----->|
-     *                 ^ 
-     *                 | interpolated value
-     *                 
-     *  This version is discretized to make it more efficient: it can only
-     *  interpolate 9 points in between. In other words, t should be a value
-     *  in the range [0,8].
-     *
-     *  This choice makes certain computations fast. For example, instead of
-     *  computing a * t * t * t (for values of t in [0,1]), we can compute
-     *      a * (t/8) * (t/8) * (t/8)
-     *    = a * t * t * t / (8 * 8 * 8)
-     *    = (a * t * t * t) >> 9
-     */
-
-    uint8_t cubic8( uint8_t A, uint8_t B, uint8_t C, uint8_t D, uint16_t t)
-    {
-        uint32_t Do2 = D/2;
-        uint32_t Ao2 = A/2;
-        uint32_t a = -Ao2 + (3*B)/2 - (3*C)/2 + Do2;
-        uint32_t b = A - (5*B)/2 + 2*C - Do2;
-        uint32_t c = -Ao2 + C/2;
-        uint32_t d = B;
-
-        uint32_t at3 = (a * t * t * t) >> 9;
-        uint32_t bt2 = (b * t * t) >> 6;
-        uint32_t ct  = (c * t) >> 3;
-        uint32_t r32 = at3 + bt2 + ct + d;
-        return uint8_t(r32);
-    }
-
-    uint8_t getPixel(uint16_t X, uint16_t Y, int xdelta, int ydelta)
-    {
-        return 0;
-    }
-
-    uint8_t sampleBicubic(uint16_t x, uint16_t y)
-    {
-        uint16_t X = x >> 4;
-        uint16_t Y = y >> 4;
-
-        return 0;
-    }
-};
-
-
-// ===== Patterns ====================================================
 
 CRGBPalette16 g_palette[] = 
     { RainbowColors_p, 
@@ -130,6 +63,7 @@ CRGBPalette16 g_palette[] =
       PartyColors_p,
       HeatColors_p };
 
+// ===== Cells ====================================================
 
 class Cell;
 
@@ -194,16 +128,22 @@ public:
           m_ir_input(ir_input),
           m_ir_channel(ir_channel),
           m_ir_recent(0),
-          m_decay(true),
-          m_up_decay(4),
-          m_down_decay(8),
+          m_decay(false),
+          m_up_decay(10),
+          m_down_decay(20),
           m_led_index(led_pos * LEDS_PER_CELL), 
           m_translate(0),
           m_palette(RainbowColors_p),
           m_pattern(0),
           m_fade_by(0)
     {
+        CRGB yellow = CRGB::Yellow;
+        setAllLEDs(yellow);
+        FastLED.show();
         calibrateIR();
+        CRGB green = CRGB::Green;
+        setAllLEDs(green);
+        FastLED.show();
     }
 
     // ----- Getters and setters -----
@@ -222,13 +162,24 @@ public:
     void setTranslation(uint16_t trans) { m_translate = trans; }
     uint16_t getTranslation(void) const { return m_translate; }
 
+    uint16_t getX() const { return m_x; }
+    uint16_t getY() const { return m_y; }
+
     // ----- Rendering methods -----
 
-    // -- Get a reference to an LED based on its local index
+    /* Get and Set raw LEDs
+     * Access the ring without any translation or interpolation.
+     */
     CRGB& getRawLED(int local_index) {
         if (local_index < 0) local_index = 0;
         if (local_index >= LEDS_PER_CELL) local_index = LEDS_PER_CELL - 1;
         return g_LEDs[m_led_index + local_index];
+    }
+
+    void setRawLED(int local_index, CRGB color) {
+        if (local_index < 0) local_index = 0;
+        if (local_index >= LEDS_PER_CELL) local_index = LEDS_PER_CELL - 1;
+        g_LEDs[m_led_index + local_index] = color;
     }
 
     /* Set a pixel
@@ -363,7 +314,7 @@ public:
         for (int i = 0; i < 8; i++) {
             m_ir_history[i] = 0;
         }
-        Serial.print(m_ir_channel); Serial.print("  "); Serial.println(m_ir_max);
+        // Serial.print(m_ir_channel); Serial.print("  "); Serial.println(m_ir_max);
     }
     
     uint8_t senseIR()
@@ -455,6 +406,194 @@ public:
     }
 };
 
+// ===== 2D Image view ===============================================
+
+#define HUE_BLACK 0xFF
+
+class ImageView
+{
+private:
+
+    uint8_t  m_Image[IMAGE_WIDTH][IMAGE_HEIGHT];
+    uint16_t m_trans_x;
+    uint16_t m_trans_y;
+
+    // -- Exact location of each LED
+    //    A ring is defined as a 2x2 grid, so each location is a number
+    //    between 0 and 4, represented as a 16-bit fixed-point value
+    uint16_t m_pixel_x[LEDS_PER_CELL];
+    uint16_t m_pixel_y[LEDS_PER_CELL];
+
+public:
+    ImageView()
+        : m_trans_x(0),
+          m_trans_y(0)
+    {
+        buildmap();
+        clearImage();
+    }
+
+    uint16_t float_to_fixed(float v)
+    {
+        uint8_t whole = (uint8_t) v;
+        uint8_t frac = (uint8_t) (256.0 * (v - ((float)whole)));
+        uint16_t result = whole;
+        result <<= 8;
+        result |= frac;
+        return result;
+    }
+    
+    void buildmap()
+    {
+        for (int i = 0; i < LEDS_PER_CELL; i++) {
+            // -- Divide the ring into 12 equal angles
+            float frac = ((float) i) / ((float) LEDS_PER_CELL);
+            float angle = frac * 3.1415926535897 * 2.0;
+            
+            // -- X and Y along a ring of diameter 4
+            //    These values will serve as the top left corner of a box
+            //    that samples the underlying image.
+            float x = (cos(angle) + 1.0) * 2.0;
+            float y = (sin(angle) + 1.0) * 2.0;
+    
+            // -- Convert to fixed point values
+            m_pixel_x[i] = float_to_fixed(x);
+            m_pixel_y[i] = float_to_fixed(y);
+            
+            // Serial.print(i); Serial.print(" : "); Serial.print(x); Serial.print(","); Serial.println(y); 
+        }
+    }
+    
+    void clearImage()
+    {
+       for (int i = 0; i < IMAGE_WIDTH; i++) {
+            for (int j = 0; j < IMAGE_HEIGHT; j++) {
+                m_Image[i][j] = HUE_BLACK;
+            }
+        }
+    }
+    
+    CRGB getHueFromImage(int x, int y, CRGBPalette16& palette)
+    {
+        if (x < 0 || x >= IMAGE_WIDTH)  return CRGB::Black;
+        if (y < 0 || y >= IMAGE_HEIGHT) return CRGB::Black;
+        uint8_t hue = m_Image[x][y];
+        if (hue == HUE_BLACK) return CRGB::Black;
+        else return ColorFromPalette(palette, hue);
+    }
+    
+    CRGB getImagePixel(int led_index, int ring_x, int ring_y, CRGBPalette16& palette)
+    {
+        bool g_Debug = false;
+        
+        // -- Lookup the relative oordinates of this LED
+        //    within its own ring
+        uint16_t x_local = m_pixel_x[led_index];
+        uint16_t y_local = m_pixel_y[led_index];
+        
+        // -- Now compute its global position based on
+        //    the center of the ring
+        int center_x = ring_x * 5;
+        int center_y = ring_y * 3;
+        uint16_t x = (center_x << 8) + x_local + m_trans_x;
+        uint16_t y = (center_y << 8) + y_local + m_trans_y;
+        
+        // -- Get the coordinates of the top left pixel
+        uint16_t x_whole = x >> 8;
+        uint16_t y_whole = y >> 8;
+        
+        // -- Get the fractional part, scale down to 0-15
+        uint8_t x_frac = (x & 0xFF) >> 4;
+        uint8_t y_frac = (y & 0xFF) >> 4;
+        
+        if (g_Debug) {
+            Serial.print(led_index); Serial.print(" : ");
+            Serial.print(x_whole); Serial.print(" + "); Serial.print(x_frac); Serial.print(" , ");
+            Serial.print(y_whole); Serial.print(" + "); Serial.print(y_frac); 
+        }
+        
+        // -- Sample up to four pixels
+        // -- Top left
+        CRGB color = getHueFromImage(x_whole, y_whole, palette);
+        uint8_t frac_TL = ((0x10 - x_frac) * (0x10 - y_frac)) - 1;
+        color.nscale8_video(frac_TL);
+        if (g_Debug) { Serial.print(" TL: "); Serial.print(frac_TL); }
+        
+        if (x_frac > 0) {
+            // -- LED crosses into the adjacent pixel to the right
+            CRGB color_TR = getHueFromImage(x_whole+1, y_whole, palette);
+            uint8_t frac_TR = x_frac * (0x10 - y_frac);
+            color_TR.nscale8_video(frac_TR);
+            color += color_TR;
+            if (g_Debug) { Serial.print(" TR: "); Serial.print(frac_TR); }
+        }
+        
+        if (y_frac > 0) {
+            // -- LED crosses into the adjacent pixel below
+            CRGB color_BL = getHueFromImage(x_whole, y_whole+1, palette);
+            uint8_t frac_BL = (0x10 - x_frac) * y_frac;
+            color_BL.nscale8_video(frac_BL);
+            color += color_BL;
+            if (g_Debug) { Serial.print(" BL: "); Serial.print(frac_BL); }
+        }
+        
+        if (x_frac > 0 and y_frac > 0) {
+            // -- LED crosses both boundaries into the corner LED
+            CRGB color_BR = getHueFromImage(x_whole+1, y_whole+1, palette);
+            uint8_t frac_BR = x_frac * y_frac;
+            color_BR.nscale8_video(frac_BR);
+            color += color_BR;
+            if (g_Debug) { Serial.print(" BR: "); Serial.print(frac_BR); }
+        }
+        
+        if (g_Debug) { Serial.println(); }
+        
+        return color;
+    }
+
+    /** Cubic Hermite for discrete space
+     *
+     *  Compute an interpolated value between B and C at a distance proportional
+     *  to t. A and D are neighboring values that affect the curve near the edges
+     *  (A is on the other side of B; D is on the other side of C):
+     *
+     *    A ....... B ....... C ....... D
+     *              |<-t----->|
+     *                 ^ 
+     *                 | interpolated value
+     *                 
+     *  This version is discretized to make it more efficient: it can only
+     *  interpolate 9 points in between. In other words, t should be a value
+     *  in the range [0,8].
+     *
+     *  This choice makes certain computations fast. For example, instead of
+     *  computing a * t * t * t (for values of t in [0,1]), we can compute
+     *      a * (t/8) * (t/8) * (t/8)
+     *    = a * t * t * t / (8 * 8 * 8)
+     *    = (a * t * t * t) >> 9
+     */
+
+    uint8_t cubic8( uint8_t A, uint8_t B, uint8_t C, uint8_t D, uint16_t t)
+    {
+        uint32_t a = (D + 3*B - 3*C - A)/2;
+        uint32_t b = A + 2*C - (5*B + D)/2;
+        uint32_t c = (C - A)/2;
+        uint32_t d = B;
+
+        // uint32_t a = -Ao2 + (3*B)/2 - (3*C)/2 + Do2;
+        // uint32_t b = A - (5*B)/2 + 2*C - Do2;
+        // uint32_t c = -Ao2 + C/2;
+
+        uint32_t at3 = (a * t * t * t) >> 9;
+        uint32_t bt2 = (b * t * t) >> 6;
+        uint32_t ct  = (c * t) >> 3;
+        uint32_t r32 = at3 + bt2 + ct + d;
+        return uint8_t(r32);
+    }
+};
+
+// ===== Patterns ====================================================
+
 class SolidPattern : public Pattern
 {
 public:
@@ -528,6 +667,7 @@ public:
 
     void render(uint8_t level, uint32_t delta_t)
     { 
+        return;
         int num_leds = LEDS_PER_CELL;
       
         // Temperature is in arbitrary units from 0 (cold black) to 255 (white hot).
@@ -536,7 +676,7 @@ public:
         // Less cooling = taller flames.  More cooling = shorter flames.
         // Default 55, suggested range 20-100       
         int cooling = map(level, 0, 255, 20, 150);
-            
+        
         // Step 1.  Cool down every cell a little
         for( int i = 0; i < num_leds; i++) {
             m_heat[i] = qsub8( m_heat[i],  random8(0, ((cooling * 10) / num_leds) + 2));
@@ -550,7 +690,7 @@ public:
         // Step 3.  Randomly ignite new 'sparks' of heat near the bottom
         if( random8() < m_sparking ) {
             int y = random8(3);
-            m_heat[y] = qadd8( m_heat[y], random8(100,150) );
+            // m_heat[y] = qadd8( m_heat[y], random8(100,150) );
         }
   
         // Step 4.  Map from heat cells to LED colors
@@ -657,7 +797,7 @@ public:
 
     virtual Pattern * clone()
     {
-        return new DiscoPattern(*this);
+        return new DiscoPattern(m_range, m_speed);
     }
 
     void render(uint8_t level, uint32_t delta_t) 
@@ -686,78 +826,123 @@ public:
     }
 };
 
-
-// ===== Cells ====================================================
-
-Cell * g_Cells[NUM_CELLS];
-
-void init_cells()
+class ImagePattern : public Pattern
 {
-    int index = 0;
-    //                         IRin IRch X   Y  LED
-    g_Cells[index++] = new Cell( 0,  0,  2,  1, 60 );
-    g_Cells[index++] = new Cell( 0,  1,  6,  1, 49 );
-    g_Cells[index++] = new Cell( 0,  2, 10,  1, 38 );
-    g_Cells[index++] = new Cell( 0,  3, 14,  1, 27 );
-    g_Cells[index++] = new Cell( 0,  4, 18,  1, 16 );
-    g_Cells[index++] = new Cell( 0,  5, 22,  1,  5 );
-    g_Cells[index++] = new Cell( 0,  6,  4,  2, 54 );
-    g_Cells[index++] = new Cell( 0,  7,  8,  2, 43 );
-    g_Cells[index++] = new Cell( 0,  8, 12,  2, 32 );
-    g_Cells[index++] = new Cell( 0,  9, 16,  2, 21 );
-    g_Cells[index++] = new Cell( 0, 10, 20,  2, 10 );
-    g_Cells[index++] = new Cell( 0, 11,  2,  3, 59 );
-    g_Cells[index++] = new Cell( 0, 12,  6,  3, 48 );
-    g_Cells[index++] = new Cell( 0, 13, 10,  3, 37 );
-    g_Cells[index++] = new Cell( 0, 14, 14,  3, 26 );
-    g_Cells[index++] = new Cell( 0, 15, 18,  3, 15 );
-    g_Cells[index++] = new Cell( 1,  0, 22,  3,  4 );
-    g_Cells[index++] = new Cell( 1,  1,  4,  4, 53 );
-    g_Cells[index++] = new Cell( 1,  2,  8,  4, 42 );
-    g_Cells[index++] = new Cell( 1,  3, 12,  4, 31 );
-    g_Cells[index++] = new Cell( 1,  4, 16,  4, 20 );
-    g_Cells[index++] = new Cell( 1,  5, 20,  4,  9 );
-    g_Cells[index++] = new Cell( 1,  6,  2,  5, 58 );
-    g_Cells[index++] = new Cell( 1,  7,  6,  5, 47 );
-    g_Cells[index++] = new Cell( 1,  8, 10,  5, 36 );
-    g_Cells[index++] = new Cell( 1,  9, 14,  5, 25 );
-    g_Cells[index++] = new Cell( 1, 10, 18,  5, 14 );
-    g_Cells[index++] = new Cell( 1, 11, 22,  5,  3 );
-    g_Cells[index++] = new Cell( 1, 12,  4,  6, 52 );
-    g_Cells[index++] = new Cell( 1, 13,  8,  6, 41 );
-    g_Cells[index++] = new Cell( 1, 14, 12,  6, 30 );
-    g_Cells[index++] = new Cell( 1, 15, 16,  6, 19 );
-    g_Cells[index++] = new Cell( 2,  0, 20,  6,  8 );
-    g_Cells[index++] = new Cell( 2,  1,  2,  7, 57 );
-    g_Cells[index++] = new Cell( 2,  2,  6,  7, 46 );
-    g_Cells[index++] = new Cell( 2,  3, 10,  7, 35 );
-    g_Cells[index++] = new Cell( 2,  4, 14,  7, 24 );
-    g_Cells[index++] = new Cell( 2,  5, 18,  7, 13 );
-    g_Cells[index++] = new Cell( 2,  6, 22,  7,  2 );
-    g_Cells[index++] = new Cell( 2,  7,  4,  8, 51 );
-    g_Cells[index++] = new Cell( 2,  8,  8,  8, 40 );
-    g_Cells[index++] = new Cell( 2,  9, 12,  8, 29 );
-    g_Cells[index++] = new Cell( 2, 10, 16,  8, 18 );
-    g_Cells[index++] = new Cell( 2, 11, 20,  8,  7 );
-    g_Cells[index++] = new Cell( 2, 12,  2,  9, 56 );
-    g_Cells[index++] = new Cell( 2, 13,  6,  9, 45 );
-    g_Cells[index++] = new Cell( 2, 14, 10,  9, 34 );
-    g_Cells[index++] = new Cell( 2, 15, 14,  9, 23 );
-    g_Cells[index++] = new Cell( 3,  0, 18,  9, 12 );
-    g_Cells[index++] = new Cell( 3,  1, 22,  9,  1 );
-    g_Cells[index++] = new Cell( 3,  2,  4, 10, 50 );
-    g_Cells[index++] = new Cell( 3,  3,  8, 10, 39 );
-    g_Cells[index++] = new Cell( 3,  4, 12, 10, 28 );
-    g_Cells[index++] = new Cell( 3,  5, 16, 10, 17 );
-    g_Cells[index++] = new Cell( 3,  6, 20, 10,  6 );
-    g_Cells[index++] = new Cell( 3,  7,  2, 11, 55 );
-    g_Cells[index++] = new Cell( 3,  8,  6, 11, 44 );
-    g_Cells[index++] = new Cell( 3,  9, 10, 11, 33 );
-    g_Cells[index++] = new Cell( 3, 10, 14, 11, 22 );
-    g_Cells[index++] = new Cell( 3, 11, 18, 11, 11 );
-    g_Cells[index++] = new Cell( 3, 12, 22, 11,  0 );
-    assert( index == NUM_CELLS);
-}
+private:
+    ImageView * m_image;
+
+public:
+    ImagePattern(ImageView * image)
+        : Pattern(),
+          m_image(image)
+    {}
+
+    virtual Pattern * clone()
+    {
+        return new ImagePattern(m_image);
+    }
+
+    void render(uint8_t level, uint32_t delta_t) 
+    {
+        // -- For each LED in this ring, sample the colors
+        //    from the backing image to get a final color
+        for (int i = 0; i < LEDS_PER_CELL; i++) {
+            m_cell->setRawLED(i, getImagePixel(i, m_cell->getX(), m_cell->getY(), m_cell->getPalette()));
+        }
+    }
+};
+
+// ===== Table ====================================================
+
+class ReacTable
+{
+private:
+
+    Cell * g_Cells[NUM_CELLS];
+
+public:
+
+    ReacTable() 
+    {
+        int index = 0;
+        //                         IRin IRch X   Y  LED
+        g_Cells[index++] = new Cell( 0,  0,  0,  0, 60 );
+        g_Cells[index++] = new Cell( 0,  1,  2,  0, 49 );
+        g_Cells[index++] = new Cell( 0,  2,  4,  0, 38 );
+        g_Cells[index++] = new Cell( 0,  3,  6,  0, 27 );
+        g_Cells[index++] = new Cell( 0,  4,  8,  0, 16 );
+        g_Cells[index++] = new Cell( 0,  5, 10,  0,  5 );
+        g_Cells[index++] = new Cell( 0,  6,  1,  1, 54 );
+        g_Cells[index++] = new Cell( 0,  7,  3,  1, 43 );
+        g_Cells[index++] = new Cell( 0,  8,  5,  1, 32 );
+        g_Cells[index++] = new Cell( 0,  9,  7,  1, 21 );
+        g_Cells[index++] = new Cell( 0, 10,  9,  1, 10 );
+        g_Cells[index++] = new Cell( 0, 11,  0,  2, 59 );
+        g_Cells[index++] = new Cell( 0, 12,  2,  2, 48 );
+        g_Cells[index++] = new Cell( 0, 13,  4,  2, 37 );
+        g_Cells[index++] = new Cell( 0, 14,  6,  2, 26 );
+        g_Cells[index++] = new Cell( 0, 15,  8,  2, 15 );
+        g_Cells[index++] = new Cell( 1,  0, 10,  2,  4 );
+        g_Cells[index++] = new Cell( 1,  1,  1,  3, 53 );
+        g_Cells[index++] = new Cell( 1,  2,  3,  3, 42 );
+        g_Cells[index++] = new Cell( 1,  3,  5,  3, 31 );
+        g_Cells[index++] = new Cell( 1,  4,  7,  3, 20 );
+        g_Cells[index++] = new Cell( 1,  5,  9,  3,  9 );
+        g_Cells[index++] = new Cell( 1,  6,  0,  4, 58 );
+        g_Cells[index++] = new Cell( 1,  7,  2,  4, 47 );
+        g_Cells[index++] = new Cell( 1,  8,  4,  4, 36 );
+        g_Cells[index++] = new Cell( 1,  9,  6,  4, 25 );
+        g_Cells[index++] = new Cell( 1, 10,  8,  4, 14 );
+        g_Cells[index++] = new Cell( 1, 11, 10,  4,  3 );
+        g_Cells[index++] = new Cell( 1, 12,  1,  5, 52 );
+        g_Cells[index++] = new Cell( 1, 13,  3,  5, 41 );
+        g_Cells[index++] = new Cell( 1, 14,  5,  5, 30 );
+        g_Cells[index++] = new Cell( 1, 15,  7,  5, 19 );
+        g_Cells[index++] = new Cell( 2,  0,  9,  5,  8 );
+        g_Cells[index++] = new Cell( 2,  1,  0,  6, 57 );
+        g_Cells[index++] = new Cell( 2,  2,  2,  6, 46 );
+        g_Cells[index++] = new Cell( 2,  3,  4,  6, 35 );
+        g_Cells[index++] = new Cell( 2,  4,  6,  6, 24 );
+        g_Cells[index++] = new Cell( 2,  5,  8,  6, 13 );
+        g_Cells[index++] = new Cell( 2,  6, 10,  6,  2 );
+        g_Cells[index++] = new Cell( 2,  7,  1,  7, 51 );
+        g_Cells[index++] = new Cell( 2,  8,  3,  7, 40 );
+        g_Cells[index++] = new Cell( 2,  9,  5,  7, 29 );
+        g_Cells[index++] = new Cell( 2, 10,  7,  7, 18 );
+        g_Cells[index++] = new Cell( 2, 11,  9,  7,  7 );
+        g_Cells[index++] = new Cell( 2, 12,  0,  8, 56 );
+        g_Cells[index++] = new Cell( 2, 13,  2,  8, 45 );
+        g_Cells[index++] = new Cell( 2, 14,  4,  8, 34 );
+        g_Cells[index++] = new Cell( 2, 15,  6,  8, 23 );
+        g_Cells[index++] = new Cell( 3,  0,  8,  8, 12 );
+        g_Cells[index++] = new Cell( 3,  1, 10,  8,  1 );
+        g_Cells[index++] = new Cell( 3,  2,  1,  9, 50 );
+        g_Cells[index++] = new Cell( 3,  3,  3,  9, 39 );
+        g_Cells[index++] = new Cell( 3,  4,  5,  9, 28 );
+        g_Cells[index++] = new Cell( 3,  5,  7,  9, 17 );
+        g_Cells[index++] = new Cell( 3,  6,  9,  9,  6 );
+        g_Cells[index++] = new Cell( 3,  7,  0, 10, 55 );
+        g_Cells[index++] = new Cell( 3,  8,  2, 10, 44 );
+        g_Cells[index++] = new Cell( 3,  9,  4, 10, 33 );
+        g_Cells[index++] = new Cell( 3, 10,  6, 10, 22 );
+        g_Cells[index++] = new Cell( 3, 11,  8, 10, 11 );
+        g_Cells[index++] = new Cell( 3, 12, 10, 10,  0 );
+        assert( index == NUM_CELLS);
+    }
+
+    void set_all_patterns(Pattern * prototype) {
+        for (int i = 0; i < NUM_CELLS; i++) {
+            g_Cells[i]->clonePattern( prototype );
+        }
+    }
+    
+    void renderImage()
+    {
+        for (int i = 0; i < NUM_CELLS; i++) {
+            g_Cells[i]->renderImage();
+        }
+    }
+};
 
 /*
 typedef CellWrapper<Fade<40,
@@ -784,12 +969,6 @@ typedef CellWrapper< Disco<60, 3,
 Cell * g_cells[NUM_CELLS];
 */
 
-void set_all_patterns(Pattern * prototype)
-{
-    for (int i = 0; i < NUM_CELLS; i++) {
-        g_Cells[i]->clonePattern( prototype );
-    }
-}   
 
 // ===== Buttons and controls =============
 
@@ -849,8 +1028,8 @@ adel adjustments()
     while (1) {
         andthen( rotary( &delta ) );
         val += delta;
-        Serial.print("Val = ");
-        Serial.println(val);
+        // Serial.print("Val = ");
+        // Serial.println(val);
     }
 
     aend;
@@ -878,6 +1057,8 @@ void setup()
 
     Serial.begin(115200);
     delay(200);
+
+    pinMode(MIC_PIN, INPUT);
     
     // -- Set up the LED rings (as a giant strip)
     FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(g_LEDs, NUM_LEDS).setCorrection( TypicalLEDStrip );
@@ -904,13 +1085,18 @@ void setup()
     pinMode(IR_CHANNEL_BIT_3, OUTPUT);
 
     init_cells();
+    initImage();
     SolidPattern solid;
     set_all_patterns(&solid);
     
-    Serial.println("READY!");
-    display.drawString(10, 28, "Ready!");
+    // Serial.println("READY!");
+    display.drawString(10, 10, "Ready!");
     display.display();
     delay(2000);
+
+    // uint32_t freemem = esp_get_free_heap_size();
+    // Serial.print("Free memory: ");
+    // Serial.println(freemem);
 }
 
 adel render()
@@ -928,6 +1114,86 @@ adel render()
             }
         }
         FastLED.show();
+        if (1) {
+            int val = analogRead(MIC_PIN);
+            int scaled = map(val, 0, 4000, 0, 100);
+            display.clear();
+            display.fillRect(10, 30, scaled, 10);
+            display.display();
+        }
+        adelay(1000/FRAMES_PER_SECOND);
+    }
+    aend;
+}
+
+void draw_image()
+{
+    int center_x = IMAGE_WIDTH/2;
+    int center_y = IMAGE_HEIGHT/2;
+    for (int i = 0; i < 20; i++) {
+       g_Image[center_x + i][center_y] = 50;
+       g_Image[center_x + i][center_y+1] = 50;
+       g_Image[center_x + i][center_y+9] = 130;
+       g_Image[center_x + i][center_y+10] = 130;
+       g_Image[center_x + i][center_y+19] = 50;
+       g_Image[center_x + i][center_y+20] = 50;
+    }
+    for (int j = 0; j < 20; j++) {
+       g_Image[center_x][center_y+j] = 50;
+       g_Image[center_x+1][center_y+j] = 50;
+       g_Image[center_x+9][center_y+j] = 130;
+       g_Image[center_x+10][center_y+j] = 130;
+       g_Image[center_x+19][center_y+j] = 50;
+       g_Image[center_x+20][center_y+j] = 50;
+    }
+}
+
+void computeIRCenter(uint16_t & cx, uint16_t & cy)
+{
+    uint32_t total_x = 0;
+    uint32_t total_y = 0;
+    uint32_t count = 0;
+    for (int i = 0; i < NUM_CELLS; i++) {
+        uint8_t level = g_Cells[i]->senseIR();
+        if (level < 128) {
+            uint32_t scale = (128 - level)/32;
+            total_x += scale * g_Cells[i]->getX();
+            total_y += scale * g_Cells[i]->getY();
+            count += scale;
+        }
+    }
+
+    if (count == 0) {
+        cx = IMAGE_WIDTH/2;
+        cy = IMAGE_WIDTH/2;
+    } else {
+        cx = (total_x / count) * 5;
+        cy = (total_y / count) * 3;
+        Serial.print(cx); Serial.print(" ");
+        Serial.println(cy);
+    }
+}
+
+adel do_image()
+{
+    uint16_t cx;
+    uint16_t cy;
+    abegin:
+    draw_image();
+    while (1) {
+        computeIRCenter(cx, cy);
+        g_trans_x = (-cx) << 8;
+        g_trans_y = (-cy) << 8;
+        renderImage();
+        FastLED.show();
+        /*
+        g_trans_x += 0x100;
+        if (g_trans_x > 0x4000) {
+            g_trans_x = 0;
+            g_trans_y = 0;
+        }
+        g_trans_y += 0x70;
+        */
         adelay(1000/FRAMES_PER_SECOND);
     }
     aend;
@@ -937,6 +1203,7 @@ void loop()
 {
     // arepeat( adjustments() );
     // arepeat( changemode() );
-    arepeat( render() );
+    // arepeat( render() );
+    arepeat( do_image() );
 }
 

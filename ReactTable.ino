@@ -46,7 +46,7 @@ SSD1306Wire  display(0x3c, SDA_PIN, SCL_PIN);
 
 // ===== LED strip information ====================================
 
-CRGB g_LEDs[NUM_LEDS];
+CRGB g_LEDs[NUM_LEDS+12];
 
 uint8_t g_Brightness = 50;
 
@@ -89,6 +89,7 @@ public:
 
     virtual ~Pattern() {}
     virtual Pattern * clone() =0;
+    virtual void init() {}
     virtual void render(uint8_t level, uint32_t delta_t) =0;
 
 private:
@@ -170,12 +171,15 @@ public:
     }
 
     // -- Set the palette by index
-    void setPalette(int which) {
+    void setPaletteNum(int which) {
         if (which >= 0 and which < 6)  m_palette = g_palette[which];
         else m_palette = RainbowColors_p;
     }
 
     CRGBPalette16 getPalette() const { return m_palette; }
+
+    void setFadeBy(uint8_t fade) { m_fade_by = fade; }
+    uint8_t getFadeBy() const { return m_fade_by; }
 
     void setTranslation(uint16_t trans) { m_translate = trans; }
     uint16_t getTranslation(void) const { return m_translate; }
@@ -329,7 +333,7 @@ public:
         for (int i = 0; i < 8; i++) {
             m_ir_history[i] = 0;
         }
-        // Serial.print(m_ir_channel); Serial.print("  "); Serial.println(m_ir_max);
+        Serial.print(m_ir_channel); Serial.print("  "); Serial.println(m_ir_max);
     }
     
     uint8_t senseIR()
@@ -388,6 +392,7 @@ public:
             
         m_pattern = pattern;
         m_pattern->setCell(this);
+        m_pattern->init();
     }
     
     void clonePattern(Pattern * prototype)
@@ -612,21 +617,27 @@ public:
 class DotPattern : public Pattern
 {
 private:
-    int m_min_speed;
-    int m_max_speed;
+    uint16_t m_min_speed;
+    uint16_t m_max_speed;
     uint16_t m_position;
 
 public:
     DotPattern(int min_speed, int max_speed)
         : Pattern(),
-          m_min_speed(min_speed),
-          m_max_speed(max_speed),
+          m_min_speed(min_speed << 8),
+          m_max_speed(max_speed << 8),
           m_position(0)
     {}
 
     virtual Pattern * clone()
     {
         return new DotPattern(*this);
+    }
+
+    void init()
+    {
+        m_cell->setFadeBy(20);
+        m_position = random16();
     }
 
     virtual void render(uint8_t level, uint32_t delta_t)
@@ -648,6 +659,14 @@ public:
     FirePattern(int sparking)
         : Pattern(),
           m_sparking(sparking)
+    {}
+
+    virtual Pattern * clone()
+    {
+        return new FirePattern(*this);
+    }
+
+    virtual void init()
     {
         for (int i = 0; i < LEDS_PER_CELL; i++) {
             m_heat[i] = 0;
@@ -656,14 +675,8 @@ public:
         m_cell->setTranslation(random16());
     }
 
-    virtual Pattern * clone()
-    {
-        return new FirePattern(*this);
-    }
-
     void render(uint8_t level, uint32_t delta_t)
     { 
-        return;
         int num_leds = LEDS_PER_CELL;
       
         // Temperature is in arbitrary units from 0 (cold black) to 255 (white hot).
@@ -686,7 +699,7 @@ public:
         // Step 3.  Randomly ignite new 'sparks' of heat near the bottom
         if( random8() < m_sparking ) {
             int y = random8(3);
-            // m_heat[y] = qadd8( m_heat[y], random8(100,150) );
+            m_heat[y] = qadd8( m_heat[y], random8(100,150) );
         }
   
         // Step 4.  Map from heat cells to LED colors
@@ -782,6 +795,14 @@ public:
         : Pattern(),
           m_range(range),
           m_speed(speed)
+    {}
+
+    virtual Pattern * clone()
+    {
+        return new DiscoPattern(m_range, m_speed);
+    }
+
+    void init()
     {
         for (int i = 0; i < LEDS_PER_CELL; i++) {
             // -- Random hues
@@ -789,12 +810,7 @@ public:
             hue_level[i] = 0;
             // -- Random starting points on the curve
             position[i] = random8();
-        }
-    }
-
-    virtual Pattern * clone()
-    {
-        return new DiscoPattern(m_range, m_speed);
+        }        
     }
 
     void render(uint8_t level, uint32_t delta_t) 
@@ -1098,7 +1114,10 @@ void setup()
     g_Table.init();
     
     SolidPattern solid;
-    g_Table.setPattern(&solid);
+    FirePattern fire(150);
+    DiscoPattern disco(60,3);
+    DotPattern dot(10,40);
+    g_Table.setPattern(&dot);
     
     // Serial.println("READY!");
     display.drawString(10, 10, "Ready!");

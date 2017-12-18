@@ -1,5 +1,6 @@
 #include <adel.h>
 #include "SSD1306Wire.h"
+#include "SH1106.h"
 class Pattern;
 #include <FastLED.h>
 
@@ -42,7 +43,8 @@ int IR_INPUT[] = { 35, 34, 39, 36 };
 
 // ===== OLED Display =============================================
 
-SSD1306Wire  display(0x3c, SDA_PIN, SCL_PIN);
+SH1106  display(0x3c, SDA_PIN, SCL_PIN);
+// SSD1306Wire  display(0x3c, SDA_PIN, SCL_PIN);
 
 // ===== LED strip information ====================================
 
@@ -53,14 +55,9 @@ uint8_t g_Brightness = 50;
 #define COLOR_ORDER GRB
 #define CHIPSET     WS2812
 
-CRGBPalette16 g_palette[] = 
-    { RainbowColors_p, 
-      CloudColors_p,
-      LavaColors_p,
-      OceanColors_p,
-      ForestColors_p,
-      PartyColors_p,
-      HeatColors_p };
+// ===== Utilities  ===============================================
+
+
 
 // ===== Cells ====================================================
 
@@ -91,6 +88,9 @@ public:
     virtual Pattern * clone() =0;
     virtual void init() {}
     virtual void render(uint8_t level, uint32_t delta_t) =0;
+    virtual void setLevel(int delta) =0;
+    virtual int getLevel() =0;
+    virtual const char * name() =0;
 
 private:
     void setCell(Cell * cell) {
@@ -109,7 +109,7 @@ private:
  */
 class Cell
 {
-private:
+public:
     // -- Global parameters to control IR decay
     static bool      m_decay;
     static uint8_t   m_up_decay;
@@ -125,9 +125,7 @@ private:
     int       m_ir_channel;
     int       m_ir_max;
     int       m_ir_min;
-    uint16_t  m_ir_history[8];
-    int       m_ir_cur;
-    uint16_t  m_ir_running_sum;
+    uint16_t  m_ir_value;
     uint8_t   m_level;
 
     // -- LED ring information
@@ -147,7 +145,7 @@ public:
           m_y(Y),
           m_ir_input(ir_input),
           m_ir_channel(ir_channel),
-          m_ir_cur(0),
+          m_ir_value(0),
           m_led_index(led_pos * LEDS_PER_CELL), 
           m_translate(0),
           m_palette(RainbowColors_p),
@@ -168,12 +166,6 @@ public:
     // -- Set the palette explicitly
     void setPalette(CRGBPalette16 new_palette) {
         m_palette = new_palette;
-    }
-
-    // -- Set the palette by index
-    void setPaletteNum(int which) {
-        if (which >= 0 and which < 6)  m_palette = g_palette[which];
-        else m_palette = RainbowColors_p;
     }
 
     CRGBPalette16 getPalette() const { return m_palette; }
@@ -330,34 +322,20 @@ public:
         m_ir_max = acc/4;
         m_ir_min = 140;
 
-        for (int i = 0; i < 8; i++) {
-            m_ir_history[i] = 0;
-        }
-        Serial.print(m_ir_channel); Serial.print("  "); Serial.println(m_ir_max);
+        // Serial.print(m_ir_channel); Serial.print("  "); Serial.println(m_ir_max);
     }
     
     uint8_t senseIR()
     {
         uint16_t raw = readIR();
-	    uint16_t drop = m_ir_history[m_ir_cur];
-
-	    // -- Compute a running average by dropping the oldest value and
-	    //    adding in the newest value
-	    m_ir_running_sum -= drop;
-	    m_ir_running_sum += raw;
-	
-        m_ir_history[m_ir_cur] = raw;
-        m_ir_cur++;
-        if (m_ir_cur >= 8) m_ir_cur = 0;
-	    
-        uint16_t ave_ir = m_ir_running_sum >> 3;
+        m_ir_value = (m_ir_value + raw)/2;
 
         // -- Make sure the value makes sense
-        if (ave_ir < m_ir_min) ave_ir = m_ir_min;
-        if (ave_ir > m_ir_max) ave_ir = m_ir_max;
+        if (m_ir_value < m_ir_min) m_ir_value = m_ir_min;
+        if (m_ir_value > m_ir_max) m_ir_value = m_ir_max;
 
         // -- Map into the range 0-255
-        uint8_t level = map(ave_ir, m_ir_min, m_ir_max, 0, 255);
+        uint8_t level = map(m_ir_value, m_ir_min, m_ir_max, 0, 255);
         return level;
     }
 
@@ -399,6 +377,14 @@ public:
     {
         replacePattern(prototype->clone());
     }
+
+    void setPatternLevel(int delta) {
+        m_pattern->setLevel(delta);
+    }
+
+    const char * patternName() {
+        return m_pattern->name();
+    }
     
     // -------- Visual Rendering --------
     
@@ -419,9 +405,9 @@ public:
 };
 
 // -- Global parameters to control IR decay
-bool      Cell::m_decay = false;
+bool      Cell::m_decay = true;
 uint8_t   Cell::m_up_decay = 10;
-uint8_t   Cell::m_down_decay = 20;
+uint8_t   Cell::m_down_decay = 30;
 
 // ===== 2D Image view ===============================================
 
@@ -612,6 +598,21 @@ public:
         if (level > 230) level = 230;
         m_cell->setAllLEDs(level);
     }
+    
+    virtual void setLevel(int delta)
+    {
+        
+    }
+    
+    virtual int getLevel()
+    {
+        return 0;
+    }
+    
+    virtual const char * name()
+    {
+        return "Solid";
+    }
 };
 
 class DotPattern : public Pattern
@@ -636,7 +637,7 @@ public:
 
     void init()
     {
-        m_cell->setFadeBy(20);
+        m_cell->setFadeBy(30);
         m_position = random16();
     }
 
@@ -646,6 +647,28 @@ public:
         int speed = map(level, 0, 255, m_max_speed, m_min_speed);
         m_position += speed;
         m_cell->setPixel(m_position, level);
+    }
+    
+    virtual void setLevel(int delta)
+    {
+        if (delta > 0) {
+            if (m_max_speed < 0x8000) m_max_speed += 0x100;
+        } else {
+            if (m_max_speed < (m_min_speed + 0x100))
+                m_max_speed = m_min_speed;
+            else
+                m_max_speed -= 0x100;
+        }
+    }
+    
+    virtual int getLevel()
+    {
+        return 0;
+    }
+    
+    virtual const char * name()
+    {
+        return "Dot";
     }
 };
 
@@ -709,6 +732,26 @@ public:
             byte colorindex = scale8( m_heat[num_leds - j - 1], 170);
             m_cell->setLED(j, colorindex);
         }
+    }
+    
+    virtual void setLevel(int delta)
+    {
+        if (delta > 0) {
+            if (m_sparking < 240) m_sparking += 10;
+        } else {
+            if (m_sparking > 50) m_sparking -= 10;
+            else m_sparking = 50;
+        }
+    }
+    
+    virtual int getLevel()
+    {
+        return 0;
+    }
+    
+    virtual const char * name()
+    {
+        return "Fire";
     }
 };
 
@@ -778,6 +821,22 @@ public:
             */
         }
     }
+
+    
+    virtual void setLevel(int delta)
+    {
+        
+    }
+    
+    virtual int getLevel()
+    {
+        return 0;
+    }
+    
+    virtual const char * name()
+    {
+        return "Wave";
+    }
 };
 
 class DiscoPattern : public Pattern
@@ -825,9 +884,12 @@ public:
             uint8_t brightness = lerp8by8(20, 255, wave);
 
             // -- Hue is incremented to match the level
+            /*
             uint8_t cur_hue_level = hue_level[i];
             if (cur_hue_level < adjusted_level) hue_level[i] += min(2, adjusted_level - cur_hue_level);
             if (cur_hue_level > adjusted_level) hue_level[i] = (cur_hue_level * 3 + adjusted_level) / 4;
+            */
+            hue_level[i] = adjusted_level;
         
             m_cell->setLED(i, hue[i] + hue_level[i], brightness);
 
@@ -836,6 +898,26 @@ public:
                 hue[i] = random8(m_range);
             }
         }
+    }
+    
+    virtual void setLevel(int delta)
+    {
+        if (delta > 0) {
+            if (m_speed < 20) m_speed += 1;
+        } else {
+            if (m_speed > 2) m_speed -= 1;
+            else m_speed = 1;
+        }
+    }
+    
+    virtual int getLevel()
+    {
+        return 0;
+    }
+    
+    virtual const char * name()
+    {
+        return "Disco";
     }
 };
 
@@ -864,23 +946,80 @@ public:
             m_cell->setRawLED(i, color);
         }
     }
+    
+    virtual void setLevel(int delta)
+    {
+        
+    }
+    
+    virtual int getLevel()
+    {
+        return 0;
+    }
+    
+    virtual const char * name()
+    {
+        return "Image";
+    }
 };
 
 // ===== Table ====================================================
 
-class ReacTable
+#define NUM_PATTERNS 6
+#define NUM_PALETTES 7
+
+class ReactTable
 {
 private:
 
-    Cell * m_Cells[NUM_CELLS];
+    Cell *      m_Cells[NUM_CELLS];
+    
+    Pattern *   m_patterns[NUM_PATTERNS];
+    int         m_curPattern;
+
+    CRGBPalette16 m_palette[7];
+    const char *  m_paletteName[7];
+    int           m_curPalette;
+
+    ImageView   m_Image;
 
 public:
 
-    ReacTable() 
+    ReactTable() 
+      : m_curPattern(0), 
+        m_curPalette(0)
     {
         for (int i = 0; i < NUM_CELLS; i++) {
             m_Cells[i] = 0;
         }
+
+        m_patterns[0] = new SolidPattern();
+        m_patterns[1] = new DotPattern(10,40);
+        m_patterns[2] = new DiscoPattern(60,3);
+        m_patterns[3] = new FirePattern(150);
+        m_patterns[4] = new WavePattern();
+        m_patterns[5] = new ImagePattern(&m_Image);
+
+        m_palette[0] = RainbowColors_p;
+        m_paletteName[0] = "Rainbow";
+        
+        m_palette[1] = CloudColors_p;
+        m_paletteName[1] = "Clouds";
+
+        m_palette[2] = LavaColors_p;
+        m_paletteName[2] = "Lava";
+
+        m_palette[3] = OceanColors_p;
+        m_paletteName[3] = "Ocean";
+
+        m_palette[4] = ForestColors_p;
+        m_paletteName[4] = "Forest";
+
+        m_palette[5] = PartyColors_p;
+        m_paletteName[5] = "Party";
+
+        m_palette[6] = HeatColors_p;
+        m_paletteName[6] = "Heat";
     }
 
     void init()
@@ -949,12 +1088,38 @@ public:
         m_Cells[index++] = new Cell( 3, 11,  8, 10, 11 );
         m_Cells[index++] = new Cell( 3, 12, 10, 10,  0 );
         assert( index == NUM_CELLS);
+        nextPattern(0);
+        nextPalette(0);
     }
 
-    void setPattern(Pattern * prototype) {
+    void nextPattern(int delta) {
+        m_curPattern = (m_curPattern + delta) % NUM_PATTERNS;
+        Pattern * prototype = m_patterns[m_curPattern];
+        setPattern(prototype);
+    }
+    
+    void setPattern(Pattern * prototype)
+    {
         for (int i = 0; i < NUM_CELLS; i++) {
             m_Cells[i]->clonePattern( prototype );
         }
+    }
+
+    void nextPalette(int delta) 
+    {
+        m_curPalette = (m_curPalette + delta) % NUM_PALETTES;
+        setPalette(m_palette[m_curPalette]);
+    }
+
+    void setPalette(CRGBPalette16 palette)
+    {
+        for (int i = 0; i < NUM_CELLS; i++) {
+            m_Cells[i]->setPalette(palette);
+        }
+    }
+
+    const char * getPaletteName() {
+        return m_paletteName[m_curPalette];
     }
     
     void render(uint32_t delta_t)
@@ -963,35 +1128,39 @@ public:
             m_Cells[i]->render(delta_t);
         }
     }
+
+    void setPatternLevel(int delta)
+    {
+        for (int i = 0; i < NUM_CELLS; i++) {
+            m_Cells[i]->setPatternLevel(delta);
+        }
+    }
+
+    const char * patternName() {
+        return m_Cells[0]->patternName();
+    }
 };
 
+// ===== Main Routines ============================
+
+// -- Global table object
+ReactTable g_Table;
+
+// ===== Modes and adjustments =============
+
 /*
-typedef CellWrapper<Fade<40,
-                         ColorDot<400, 4000, 
-                                  DecayLevel< 2, 12,
-                                              IRSense< BasePattern > > > > > Cell1;
+ * Mode:
+ *   PATTERN: rotary selects pattern
+ *   LEVEL:   rotary sets pattern-specific value up and down
+ *   BRIGHT:  rotary sets overall brightness
+ */
 
-typedef CellWrapper<Fire< 100, 
-                          //DecayLevel< 1, 16,
-                          IRSense< BasePattern > > > Cell2;
-
-typedef CellWrapper< Fade<40, 
-                          ColorSolid< 
-                              DecayLevel<1, 4, 
-                                         IRSense< BasePattern > > > > > Cell3;
-
-typedef CellWrapper< ColorSolid< DecayLevel<4, 10, IRSense< BasePattern > > > > Cell4;
-
-typedef CellWrapper< Disco<60, 3, 
-                           DecayLevel<1, 4,
-                                      IRSense< BasePattern > > > > Cell5;
-
-
-Cell * m_Cells[NUM_CELLS];
-*/
-
-
-// ===== Buttons and controls =============
+enum Mode { PATTERN_MODE, 
+            PALETTE_MODE, 
+            LEVEL_MODE, 
+            DECAY_MODE,
+            BRIGHTNESS_MODE 
+     } g_Mode = BRIGHTNESS_MODE;
 
 adel waitTurn(int pinA, int pinB)
 {
@@ -1038,19 +1207,78 @@ adel waitbutton(int pin)
     aend;
 }
 
+void showMode()
+{
+    display.clear();
+    
+    const char * name = g_Table.patternName();
+    char temp[30] = "PATTERN: ";
+    strcat(temp, name);
+    display.drawString(12, 0, temp);
+    if (g_Mode == PATTERN_MODE) display.fillCircle(5, 6, 3);
+
+    strcpy(temp, "PALETTE: ");
+    strcat(temp, g_Table.getPaletteName());
+    display.drawString(12, 12, temp);
+    if (g_Mode == PALETTE_MODE) display.fillCircle(5, 18, 3);
+
+    strcpy(temp, "LEVEL: ");
+    display.drawString(12, 24, temp);
+    if (g_Mode == LEVEL_MODE) display.fillCircle(5, 30, 3);
+
+    display.drawString(12, 36, "DECAY:");
+    display.fillRect(55, 40, Cell::m_up_decay, 6);
+    if (g_Mode == DECAY_MODE) display.fillCircle(5, 42, 3);
+
+    display.drawString(12, 48, "BRIGHT: ");
+    int scaled = map(g_Brightness, 0, 128, 0, 50);
+    display.fillRect(55, 52, scaled, 6);
+    if (g_Mode == BRIGHTNESS_MODE) display.fillCircle(5, 54, 3);
+
+    display.display();
+}
+
 adel adjustments()
 {
     int delta;
-    int val;
     
- abegin:
-    val = 0;
-    
+ abegin:    
     while (1) {
         andthen( rotary( &delta ) );
-        val += delta;
-        // Serial.print("Val = ");
-        // Serial.println(val);
+        switch (g_Mode) {
+        case PATTERN_MODE:
+            g_Table.nextPattern(delta);
+            break;
+        case PALETTE_MODE:
+            g_Table.nextPalette(delta);
+            break;
+        case LEVEL_MODE:
+            g_Table.setPatternLevel(delta);
+            break;
+        case DECAY_MODE:
+            if (delta > 0) {
+                if (Cell::m_up_decay > 40) Cell::m_up_decay = 40;
+                else Cell::m_up_decay += 1;
+            } else {
+                if (Cell::m_up_decay < 1) Cell::m_up_decay = 0;
+                else Cell::m_up_decay -= 1;
+            }
+            Cell::m_down_decay = (Cell::m_up_decay * 4) + 1;
+            break;
+        case BRIGHTNESS_MODE:
+        default:
+            if (delta > 0) {
+                g_Brightness += 5;
+                if (g_Brightness > 128) g_Brightness = 128;
+            } else {
+                if (g_Brightness < 5) g_Brightness = 0;
+                else g_Brightness -= 5;
+            }
+            FastLED.setBrightness(g_Brightness);
+            break;
+        }
+
+        showMode();
     }
 
     aend;
@@ -1061,72 +1289,27 @@ adel changemode()
  abegin:
     while (1) {
         andthen( waitbutton (BUTTON_PIN) );
-        Serial.println("Button");
+        switch (g_Mode) {
+        case PATTERN_MODE:
+            g_Mode = PALETTE_MODE;
+            break;
+        case PALETTE_MODE:
+            g_Mode = LEVEL_MODE;
+            break;
+        case LEVEL_MODE:
+            g_Mode = DECAY_MODE;
+            break;
+        case DECAY_MODE:
+            g_Mode = BRIGHTNESS_MODE;
+            break;
+        case BRIGHTNESS_MODE:
+        default:
+            g_Mode = PATTERN_MODE;
+            break;
+        }
+        showMode();
     }
     aend;
-}
-
-// ===== Main Routines ============================
-
-// -- Global table object
-ReacTable g_Table;
-
-// -- Global image object
-ImageView g_Image;
-
-void setup()
-{
-    pinMode(LED_PIN, OUTPUT);
-
-    pinMode(BUTTON_PIN, INPUT);
-    pinMode(ROTARY_A_PIN, INPUT_PULLUP);
-    pinMode(ROTARY_B_PIN, INPUT_PULLUP);
-
-    Serial.begin(115200);
-    delay(200);
-
-    pinMode(MIC_PIN, INPUT);
-    
-    // -- Set up the LED rings (as a giant strip)
-    FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(g_LEDs, NUM_LEDS).setCorrection( TypicalLEDStrip );
-    FastLED.setBrightness(g_Brightness);
-    
-    fill_solid(g_LEDs, NUM_LEDS, CRGB::Black);
-    FastLED.show();
-    
-    // -- Set up the OLED display
-    
-    display.init();
-    
-    // display.flipScreenVertically();
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.setFont(ArialMT_Plain_10);
-
-    for (int i = 0; i < 4; i++) {
-        pinMode(IR_INPUT[i], INPUT);
-    }
-
-    pinMode(IR_CHANNEL_BIT_0, OUTPUT);
-    pinMode(IR_CHANNEL_BIT_1, OUTPUT);
-    pinMode(IR_CHANNEL_BIT_2, OUTPUT);
-    pinMode(IR_CHANNEL_BIT_3, OUTPUT);
-
-    g_Table.init();
-    
-    SolidPattern solid;
-    FirePattern fire(150);
-    DiscoPattern disco(60,3);
-    DotPattern dot(10,40);
-    g_Table.setPattern(&dot);
-    
-    // Serial.println("READY!");
-    display.drawString(10, 10, "Ready!");
-    display.display();
-    delay(2000);
-
-    // uint32_t freemem = esp_get_free_heap_size();
-    // Serial.print("Free memory: ");
-    // Serial.println(freemem);
 }
 
 adel render()
@@ -1140,6 +1323,7 @@ adel render()
         last_time = millis();
         g_Table.render(delta_time);
         FastLED.show();
+        /*
         if (1) {
             int val = analogRead(MIC_PIN);
             int scaled = map(val, 0, 4000, 0, 100);
@@ -1147,6 +1331,7 @@ adel render()
             display.fillRect(10, 30, scaled, 10);
             display.display();
         }
+        */
         adelay(1000/FRAMES_PER_SECOND);
     }
     aend;
@@ -1227,10 +1412,60 @@ adel do_image()
 }
 */
 
+void setup()
+{
+    pinMode(LED_PIN, OUTPUT);
+
+    pinMode(BUTTON_PIN, INPUT);
+    pinMode(ROTARY_A_PIN, INPUT_PULLUP);
+    pinMode(ROTARY_B_PIN, INPUT_PULLUP);
+
+    Serial.begin(115200);
+    delay(200);
+
+    pinMode(MIC_PIN, INPUT);
+    
+    // -- Set up the LED rings (as a giant strip)
+    FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(g_LEDs, NUM_LEDS).setCorrection( TypicalLEDStrip );
+    FastLED.setBrightness(g_Brightness);
+    
+    fill_solid(g_LEDs, NUM_LEDS, CRGB::Black);
+    FastLED.show();
+    
+    // -- Set up the OLED display
+    
+    display.init();
+    
+    // display.flipScreenVertically();
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.setFont(ArialMT_Plain_10);
+
+    for (int i = 0; i < 4; i++) {
+        pinMode(IR_INPUT[i], INPUT);
+    }
+
+    pinMode(IR_CHANNEL_BIT_0, OUTPUT);
+    pinMode(IR_CHANNEL_BIT_1, OUTPUT);
+    pinMode(IR_CHANNEL_BIT_2, OUTPUT);
+    pinMode(IR_CHANNEL_BIT_3, OUTPUT);
+
+    g_Table.init();
+    showMode();
+
+    // Serial.println("READY!");
+    // display.drawString(10, 10, "Ready!");
+    // display.display();
+    // delay(2000);
+
+    // uint32_t freemem = esp_get_free_heap_size();
+    // Serial.print("Free memory: ");
+    // Serial.println(freemem);
+}
+
 void loop()
 {
-    // arepeat( adjustments() );
-    // arepeat( changemode() );
+    arepeat( adjustments() );
+    arepeat( changemode() );
     arepeat( render() );
     // arepeat( do_image() );
 }

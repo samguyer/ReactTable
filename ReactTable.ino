@@ -6,31 +6,12 @@
 
 // ===== Global configuration =====================================
 
-#define ROTARY_A_PIN 19
-#define ROTARY_B_PIN 18
-#define BUTTON_PIN 32
-
-#define NUM_IR_CHANNELS 16
 #define IR_CHANNEL_BIT_0 0 
-// 2  // 12
 #define IR_CHANNEL_BIT_1 4 
-// 0  // 14
 #define IR_CHANNEL_BIT_2 16 
-// 4  // 27
 #define IR_CHANNEL_BIT_3 17 
-// 16 // 26
 
-#define NUM_IR_INPUTS 4
-int IR_INPUT_PIN[] = { 27, 14, 12, 13 }; // { 35, 34, 39, 36 };
-
-#define SDA_PIN 21
-#define SCL_PIN 22
-
-#define X_PIN 32
-#define Y_PIN 33
-#define Z_PIN 25
-
-#define MIC_PIN 13
+int IR_INPUT_PIN[] = { 35, 34, 39, 36 };
 
 #define LED_PIN 17
 #define LED_PIN_1 2 // 13
@@ -50,14 +31,28 @@ int IR_INPUT_PIN[] = { 27, 14, 12, 13 }; // { 35, 34, 39, 36 };
 #define CELL_COLS 12
 #define CELL_ROWS 12
 
+// -- The core to run FastLED.show()
+#define FASTLED_SHOW_CORE 0
+
+// -- Currently unused:
+
 #define IMAGE_WIDTH_SCALE  5
 #define IMAGE_HEIGHT_SCALE 3
 #define IMAGE_WIDTH  ((CELL_COLS+2) * IMAGE_WIDTH_SCALE)
 #define IMAGE_HEIGHT ((CELL_ROWS+2) * IMAGE_HEIGHT_SCALE)
 
-// -- The core to run FastLED.show()
-#define FASTLED_SHOW_CORE 0
+#define ROTARY_A_PIN 19
+#define ROTARY_B_PIN 18
+#define BUTTON_PIN 32
 
+#define SDA_PIN 21
+#define SCL_PIN 22
+
+#define X_PIN 32
+#define Y_PIN 33
+#define Z_PIN 25
+
+#define MIC_PIN 13
 // ===== LED strip information ====================================
 
 CRGB g_LEDs[NUM_LEDS + 10];

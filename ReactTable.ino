@@ -79,6 +79,42 @@ uint8_t g_Brightness = 45;
 /** Storage for LEDs */
 CRGB g_LEDs[NUM_LEDS];
 
+// === Cell mapping =========================================================
+
+/** Cell mapping
+ *
+ * This data structure connects together the IR input information with
+ * the LED information. It holds the IR input and the index of the
+ * LED ring for that cell. Both values are between 0 and NUM_CELLS
+ *
+ * The reason we need this mapping is that the IR inputs are not wired
+ * in the same order as the LED rings. I probably could have done it
+ * that way, but I felt like it was easier to make the wiring simple
+ * and fix it in software.
+*/
+
+struct CellMapEntry
+{
+    uint8_t    m_ir_index;
+    uint16_t   m_led_index;
+    uint8_t    m_x;
+    uint8_t    m_y;
+};
+
+CellMapEntry g_CellMap[] = {
+    {  0, 60, 0, 0 }, {  1, 49, 2, 0 }, {  2, 38, 4, 0 }, {  3, 27, 6, 0 }, {  4, 16, 8, 0 }, {  5, 5, 10, 0 },
+    {  6, 54, 1, 1 }, {  7, 43, 3, 1 }, {  8, 32, 5, 1 }, {  9, 21, 7, 1 }, { 10, 10, 9, 1 },
+    { 11, 59, 0, 2 }, { 12, 48, 2, 2 }, { 13, 37, 4, 2 }, { 14, 26, 6, 2 }, { 15, 15, 8, 2 }, { 16, 4, 10, 2 },
+    { 17, 53, 1, 3 }, { 18, 42, 3, 3 }, { 19, 31, 5, 3 }, { 20, 20, 7, 3 }, { 21,  9, 9, 3 },
+    { 22, 58, 0, 4 }, { 23, 47, 2, 4 }, { 24, 36, 4, 4 }, { 25, 25, 6, 4 }, { 26, 14, 8, 4 }, { 27, 3, 10, 4 },
+    { 28, 52, 1, 5 }, { 29, 41, 3, 5 }, { 30, 30, 5, 5 }, { 31, 19, 7, 5 }, { 32,  8, 9, 5 },
+    { 33, 57, 0, 6 }, { 34, 46, 2, 6 }, { 35, 35, 4, 6 }, { 36, 24, 6, 6 }, { 37, 13, 8, 6 }, { 38, 2, 10, 6 },
+    { 39, 51, 1, 7 }, { 40, 40, 3, 7 }, { 41, 29, 5, 7 }, { 42, 18, 7, 7 }, { 43,  7, 9, 7 },
+    { 44, 56, 0, 8 }, { 45, 45, 2, 8 }, { 46, 34, 4, 8 }, { 47, 23, 6, 8 }, { 48, 12, 8, 8 }, { 49, 1, 10, 8 },
+    { 50, 50, 1, 9 }, { 51, 39, 3, 9 }, { 52, 28, 5, 9 }, { 53, 17, 7, 9 }, { 54,  6, 9, 9 },
+    { 55, 55, 0, 10}, { 56, 44, 2, 10}, { 57, 33, 4, 10}, { 58, 22, 6, 10}, { 59, 11, 8, 10}, { 60, 0, 10, 10 }
+};
+
 // === Single surface view ==================================================
 
 /** Cell coordinate system
@@ -153,40 +189,6 @@ void computePixelOffsets()
 }
 
 // === Cells ================================================================
-
-/** Cell mapping
- *
- * This data structure connects together the IR input information with
- * the LED information. It holds the IR input and the index of the
- * LED ring for that cell. Both values are between 0 and NUM_CELLS
- *
- * The reason we need this mapping is that the IR inputs are not wired
- * in the same order as the LED rings. I probably could have done it
- * that way, but I felt like it was easier to make the wiring simple
- * and fix it in software.
-*/
-
-struct CellMapEntry
-{
-    uint8_t    m_ir_index;
-    uint16_t   m_led_index;
-    uint8_t    m_x;
-    uint8_t    m_y;
-};
-
-CellMapEntry g_CellMap[] = {
-    {  0, 60, 0, 0 }, {  1, 49, 2, 0 }, {  2, 38, 4, 0 }, {  3, 27, 6, 0 }, {  4, 16, 8, 0 }, {  5, 5, 10, 0 },
-    {  6, 54, 1, 1 }, {  7, 43, 3, 1 }, {  8, 32, 5, 1 }, {  9, 21, 7, 1 }, { 10, 10, 9, 1 },
-    { 11, 59, 0, 2 }, { 12, 48, 2, 2 }, { 13, 37, 4, 2 }, { 14, 26, 6, 2 }, { 15, 15, 8, 2 }, { 16, 4, 10, 2 },
-    { 17, 53, 1, 3 }, { 18, 42, 3, 3 }, { 19, 31, 5, 3 }, { 20, 20, 7, 3 }, { 21,  9, 9, 3 },
-    { 22, 58, 0, 4 }, { 23, 47, 2, 4 }, { 24, 36, 4, 4 }, { 25, 25, 6, 4 }, { 26, 14, 8, 4 }, { 27, 3, 10, 4 },
-    { 28, 52, 1, 5 }, { 29, 41, 3, 5 }, { 30, 30, 5, 5 }, { 31, 19, 7, 5 }, { 32,  8, 9, 5 },
-    { 33, 57, 0, 6 }, { 34, 46, 2, 6 }, { 35, 35, 4, 6 }, { 36, 24, 6, 6 }, { 37, 13, 8, 6 }, { 38, 2, 10, 6 },
-    { 39, 51, 1, 7 }, { 40, 40, 3, 7 }, { 41, 29, 5, 7 }, { 42, 18, 7, 7 }, { 43,  7, 9, 7 },
-    { 44, 56, 0, 8 }, { 45, 45, 2, 8 }, { 46, 34, 4, 8 }, { 47, 23, 6, 8 }, { 48, 12, 8, 8 }, { 49, 1, 10, 8 },
-    { 50, 50, 1, 9 }, { 51, 39, 3, 9 }, { 52, 28, 5, 9 }, { 53, 17, 7, 9 }, { 54,  6, 9, 9 },
-    { 55, 55, 0, 10}, { 56, 44, 2, 10}, { 57, 33, 4, 10}, { 58, 22, 6, 10}, { 59, 11, 8, 10}, { 60, 0, 10, 10 }
-};
 
 /** Cell 
  * 

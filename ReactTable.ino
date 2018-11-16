@@ -3,15 +3,33 @@
 // === Pattern mode =========================================================
 
 /** Mode
- *  This version supports two modes: solid rainbow and confetti
+ *  This code supports four different animations. You can choose one of them, 
+ *  or set "cycle" to true to cycle through all of them at some set interval.
  */
-enum Mode { SolidMode, ConfettiMode, GearMode, FireMode, SurfaceMode };
+enum Mode { SolidMode, ConfettiMode, GearMode, FireMode };
+
+// -- Mode choice
 Mode g_Mode = SolidMode;
 
-// -- Amount of time to spend on each pattern (ms)
-#define TIME_PER_PATTERN 10000
+// -- To cycle modes, set cycle to true and choose an interval (in milliseconds)
+bool g_Cycle = false;
+const int TIME_PER_PATTERN = 15000;
 
-// === Pin settings =========================================================
+// === One-cell pin settings ================================================
+
+/** One cell mode
+ *  
+ *  If you only have one cell, then you only need two pins: one pin to read 
+ *  the IR analog input and one pin to drive the LED ring. You can ignore the
+ *  rest of the configuration.
+ */
+
+ #define ONE_CELL_MODE true
+
+ #define IR_INPUT_PIN 27
+ #define LED_PIN 26
+
+ // === Multi-cell pin settings ==============================================
 
 /** IR channel selector
  *
@@ -40,14 +58,19 @@ Mode g_Mode = SolidMode;
  * that to the channel selectors (above). Then we read in the input on
  * the pin specified by the next two bits of the input.
  */
-int IR_INPUT_PIN[] = { 32, 33, 34, 35 };
+int IR_INPUTS[] = { 27, 33, 34, 35 };
 
 /** Cell configuration
  *
  * My table has 61 cells, with 12 WS2812 LEDs per cell. The LEDs are
  * chained together to form a single, logical strip.
  */
+#ifdef ONE_CELL_MODE
+#define NUM_CELLS 1
+#else
 #define NUM_CELLS 61
+#endif
+
 #define LEDS_PER_CELL 12
 #define NUM_LEDS (NUM_CELLS * LEDS_PER_CELL)
 
@@ -56,8 +79,9 @@ int IR_INPUT_PIN[] = { 32, 33, 34, 35 };
  * To improve performance, I broke the strip into three segments, each
  * one attached to its own pin. Make sure the wiring matches the pin
  * configuration and the number of LEDs on each pin.
+ * 
  */
-#define LED_PIN_1 17
+#define LED_PIN_1 26
 #define NUM_LEDS_1 (22 * LEDS_PER_CELL)
 
 #define LED_PIN_2 16
@@ -67,14 +91,14 @@ int IR_INPUT_PIN[] = { 32, 33, 34, 35 };
 #define NUM_LEDS_3 (17 * LEDS_PER_CELL)
 
 /** Default brightness */
-uint8_t g_Brightness = 45;
+uint8_t g_Brightness = 60;
 
 /** Kind of LEDs */
 #define COLOR_ORDER GRB
 #define CHIPSET     WS2812
 
 /** Animation speed */
-#define FRAMES_PER_SECOND 40
+#define FRAMES_PER_SECOND 30
 
 /** Storage for LEDs */
 CRGB g_LEDs[NUM_LEDS];
@@ -96,7 +120,7 @@ CRGB g_LEDs[NUM_LEDS];
 struct CellMapEntry
 {
     uint8_t    m_ir_index;
-    uint16_t   m_led_index;
+    uint16_t   m_ring_index;
     uint8_t    m_x;
     uint8_t    m_y;
 };
@@ -131,7 +155,7 @@ CellMapEntry g_CellMap[] = {
  * The surface is a logical 2-D grid scaled up from the actual cell
  * coordinate system. In surface mode, the LEDs sample their values
  * from this single grid, allowing the entire table to be treated as a
- * single image.
+ * single image. My table has a surface 65 units wide and 39 units tall.
  */
 #define SURFACE_WIDTH_SCALE  5
 #define SURFACE_HEIGHT_SCALE 3
@@ -190,6 +214,9 @@ void computePixelOffsets()
 
 // === Cells ================================================================
 
+class Cell;
+Cell * g_Cells[NUM_CELLS];
+
 /** Cell 
  * 
  *  Each cell is managed by an instance of this class, which includes
@@ -213,10 +240,10 @@ protected:
     uint16_t        m_level;
 
     // -- Physical position
-    uint8_t         m_x;
-    uint8_t         m_y;
-    uint16_t        m_ring_x;
-    uint16_t        m_ring_y;
+    uint8_t         m_ring_x;
+    uint8_t         m_ring_y;
+    uint8_t         m_surface_x;
+    uint8_t         m_surface_y;
 
     // -- Data for the patterns
     uint16_t        m_position;
@@ -232,15 +259,15 @@ protected:
 
 public:
     Cell( CellMapEntry& info )
-        : m_led_index(info.m_led_index * LEDS_PER_CELL),
+        : m_led_index(info.m_ring_index * LEDS_PER_CELL),
           m_palette(RainbowColors_p),
           m_ir_input(info.m_ir_index >> 4),
           m_ir_channel(info.m_ir_index & 0xF),
           m_ir_min(100),
           m_ir_max(0),
           m_level(0),
-          m_x(info.m_x),
-          m_y(info.m_y),
+          m_ring_x(info.m_x),
+          m_ring_y(info.m_y),
           m_position(0),
           m_new_pattern(true)
     {
@@ -251,12 +278,17 @@ public:
         m_ir_channel_selector[3] = (m_ir_channel & 0x8) ? HIGH : LOW;
 
         // -- Compute the top left corner of the ring in surface
-        //    coordinates. We will use this value along with the
-        //    offsets in g_pixel_x and g_pixel_y to compute the
-        //    location of each LED on the surface.
-        m_ring_x = (m_x * SURFACE_WIDTH_SCALE) << 8;
-        m_ring_y = (m_y * SURFACE_HEIGHT_SCALE) << 8;
+        //    coordinates.
+        m_surface_x = ((m_ring_x + 1) * SURFACE_WIDTH_SCALE);
+        m_surface_y = ((m_ring_y + 1) * SURFACE_HEIGHT_SCALE);
     }
+
+    // ----- Getters --------
+
+    uint16_t getRingX() const { return m_ring_x; }
+    uint16_t getRingY() const { return m_ring_y; }
+    int getSurfaceX() const { return m_surface_x; }
+    int getSurfaceY() const { return m_surface_y; }
 
     // ----- IR Sensors -----
 
@@ -277,16 +309,21 @@ public:
      */
     uint16_t rawIR()
     {
-        // -- Select the channel
-        digitalWrite(IR_CHANNEL_BIT_0, m_ir_channel_selector[0]);
-        digitalWrite(IR_CHANNEL_BIT_1, m_ir_channel_selector[1]);
-        digitalWrite(IR_CHANNEL_BIT_2, m_ir_channel_selector[2]);
-        digitalWrite(IR_CHANNEL_BIT_3, m_ir_channel_selector[3]);
-
-        // -- Finally, read the analog value
         uint16_t val;
-        val = analogRead(IR_INPUT_PIN[m_ir_input]);
-        val = analogRead(IR_INPUT_PIN[m_ir_input]);
+        
+        if (ONE_CELL_MODE) {
+            val = analogRead(IR_INPUT_PIN);
+        } else {
+            // -- Select the channel
+            digitalWrite(IR_CHANNEL_BIT_0, m_ir_channel_selector[0]);
+            digitalWrite(IR_CHANNEL_BIT_1, m_ir_channel_selector[1]);
+            digitalWrite(IR_CHANNEL_BIT_2, m_ir_channel_selector[2]);
+            digitalWrite(IR_CHANNEL_BIT_3, m_ir_channel_selector[3]);
+
+            // -- Finally, read the analog value
+            val = analogRead(IR_INPUTS[m_ir_input]);
+        }
+        
         return val;
     }
 
@@ -511,6 +548,7 @@ public:
       if (x < 0 || x >= SURFACE_WIDTH)  return CRGB::Black;
       if (y < 0 || y >= SURFACE_HEIGHT) return CRGB::Black;
       uint8_t hue = g_Surface[x][y];
+      if (hue == 255) return CRGB::Black;
       return ColorFromPalette(m_palette, hue);
     }
 
@@ -532,10 +570,9 @@ public:
 
         // -- Top left
         CRGB color = getSurfaceColor(x_whole, y_whole);
-        // uint8_t frac_TL = ((0x10 - x_frac) * (0x10 - y_frac)) - 1;
-        // color.nscale8_video(frac_TL);
+        uint8_t frac_TL = ((0x10 - x_frac) * (0x10 - y_frac)) - 1;
+        color.nscale8_video(frac_TL);
 
-        /*
         if (x_frac > 0) {
             // -- LED crosses into the adjacent pixel to the right
             CRGB color_TR = getSurfaceColor(x_whole + 1, y_whole);
@@ -559,7 +596,7 @@ public:
             color_BR.nscale8_video(frac_BR);
             color += color_BR;
         }
-        */
+
         setLED(led_index, color);
     }
 
@@ -576,22 +613,194 @@ public:
     }
 };
 
-// === Basic surface ========================================================
+// === Surfaces =============================================================
 
-void TestSurface()
+Cell * g_SurfaceCells[SURFACE_WIDTH][SURFACE_HEIGHT];
+uint8_t g_Dist[20][20];
+uint8_t g_nextSurface[SURFACE_WIDTH][SURFACE_HEIGHT];
+
+/** Surface cells
+ *  
+ *  For each pixel on the surface, store the corresponding ring center (if 
+ *  there is one), or NULL. This mapping allows us to quickly visit all of
+ *  the elements of the surface and know which ones have sensors.
+ */
+void initializeSurface()
 {
-    // uint8_t  g_Surface[SURFACE_WIDTH][SURFACE_HEIGHT];
-    
+    // -- Precompute LED locations for surface view
+    computePixelOffsets();
+
     for (int x = 0; x < SURFACE_WIDTH; x++) {
         for (int y = 0; y < SURFACE_HEIGHT; y++) {
-            g_Surface[x][y] = (x + y) * 3;
+            g_SurfaceCells[x][y] = NULL;
+        }
+    }
+
+    for (int i = 0; i < NUM_CELLS; i++) {
+        Cell * cell = g_Cells[i];
+        int x = cell->getRingX();
+        int y = cell->getRingY();
+        g_SurfaceCells[cell->getRingX()][cell->getRingY()] = cell;
+    }
+
+    for (int dx = -10; dx < 10; dx++) {
+        for (int dy = -10; dy < 10; dy++) {
+            uint16_t dist = sqrt16(dx * dx + dy * dy);
+            g_Dist[dx+10][dy+10] = dist;
+        }
+    }
+
+    for (int x = 0; x < SURFACE_WIDTH; x++) {
+        for (int y = 0; y < SURFACE_HEIGHT; y++) {
+            g_nextSurface[x][y] = 0;
         }
     }
 }
 
-// === Main logic ===========================================================
+void setSurface(int x, int y, uint8_t val)
+{
+    if (x >= 0 and x < SURFACE_WIDTH and y >= 0 and y < SURFACE_HEIGHT) {
+        g_Surface[x][y] = val;
+    }
+}
 
-Cell * g_Cells[NUM_CELLS];
+uint8_t getSurface(int x, int y)
+{
+    if (x >= 0 and x < SURFACE_WIDTH and y >= 0 and y < SURFACE_HEIGHT) {
+        return g_Surface[x][y];
+    } else {
+        return 0;
+    }
+}
+
+void DiffusionSurface()
+{
+    for (int i = 0; i < NUM_CELLS; i++) {
+        Cell * cell = g_Cells[i];
+        int x = cell->getSurfaceX();
+        int y = cell->getSurfaceY();
+        g_nextSurface[x][y] = 255 - cell->senseIR();
+    }
+
+    for (int x = 0; x < SURFACE_WIDTH; x++) {
+        for (int y = 0; y < SURFACE_HEIGHT; y++) {
+            if (g_nextSurface[x][y] == 0) {
+                uint16_t neighbors = getSurface(x-1, y-1) + getSurface(x, y-1) + getSurface(x+1, y-1) +
+                                     getSurface(x-1, y  )                      + getSurface(x+1, y  ) +
+                                     getSurface(x-1, y+1) + getSurface(x, y+1) + getSurface(x+1, y+1);
+                uint8_t newval = neighbors / 8;
+                g_nextSurface[x][y] = newval;
+            }
+        }
+    }
+
+    for (int x = 0; x < SURFACE_WIDTH; x++) {
+        for (int y = 0; y < SURFACE_HEIGHT; y++) {
+            g_Surface[x][y] = g_nextSurface[x][y];
+            g_nextSurface[x][y] = 0;
+        }
+    }
+}
+
+class Particle
+{
+private:
+    // -- Position
+    float m_x;
+    float m_y;
+    
+    // -- Velocity
+    float m_vx;
+    float m_vy;
+    
+    // -- Acceleration
+    float m_ax;
+    float m_ay;
+
+public:
+
+    Particle()
+    : m_x(0.0),
+      m_y(0.0),
+      m_vx(0.0),
+      m_vy(0.0),
+      m_ax(0.0),
+      m_ay(0.0)
+    {}
+
+    void reset()
+    {
+        // -- Pick a random place along the edge of the surface
+        int pos = random16(SURFACE_WIDTH * 2 + SURFACE_HEIGHT * 2);
+        if (pos < SURFACE_WIDTH) {
+            // -- Top edge
+            m_x = (float) pos;
+            m_y = -1.0;
+        } else if (pos < SURFACE_WIDTH + SURFACE_HEIGHT) {
+            // -- Right edge
+            m_x = (float) (SURFACE_WIDTH + 1);
+            m_y = (float) (pos - SURFACE_WIDTH);
+        } else if (pos < SURFACE_WIDTH + SURFACE_HEIGHT + SURFACE_WIDTH) {
+            // -- Bottom edge
+            m_x = (float) (pos - (SURFACE_WIDTH + SURFACE_HEIGHT));
+            m_y = (float) (SURFACE_HEIGHT + 1);
+        } else {
+            // -- Left edge
+            m_x = -1.0;
+            m_y = (float) (pos - (SURFACE_WIDTH + SURFACE_HEIGHT + SURFACE_WIDTH));
+        }
+    }
+
+    void attract(float attr_x, float attr_y, uint8_t val)
+    {
+        // -- Adjust acceleration based on distance to attractor
+        float dx = (attr_x - m_x);
+        float dy = (attr_y - m_y);
+
+        m_ax = m_ax + (dx / 50.0);
+        m_ay = m_ay + (dy / 50.0);
+    }
+
+    void move()
+    {
+        // -- Update the position using velocity
+        m_x += m_vx;
+        m_y += m_vy;
+
+        // -- Update the velocity using acceleration
+        m_vx += m_ax;
+        m_vy += m_ay;
+
+        // -- Reset the acceleration (which is computed by the attract method)
+        m_ax = 0.0;
+        m_ay = 0.0;
+
+        if (m_vx < 0.5 and m_vy < 0.5) {
+            // -- If a particle stops moving, start it over as a new one
+            reset();
+        }
+    }
+
+    void show()
+    {
+        // -- Color shows velocity
+        int hue = (int) (m_vx * m_vx + m_vy * m_vy);
+
+        int x = (int) m_x;
+        int y = (int) m_y;
+        setSurface(x, y, hue);
+    }
+};
+
+
+Particle g_particles[50];
+
+void ParticleSurface()
+{
+    
+}
+
+// === Main logic ===========================================================
 
 /** Calibrate the IR sensors
  *
@@ -626,15 +835,20 @@ void calibrate()
 void initialize()
 {
     // -- Create all the cell objects
-    for (int i = 0; i < NUM_CELLS; i++) {
-        g_Cells[i] = new Cell(g_CellMap[i]);
+    if (ONE_CELL_MODE) {
+        CellMapEntry one = {0, 0, 0, 0};
+        g_Cells[0] = new Cell(one);
+    } else {
+        for (int i = 0; i < NUM_CELLS; i++) {
+            g_Cells[i] = new Cell(g_CellMap[i]);
+        }
     }
-
+    
     // -- Calibrate the IR sensors
     calibrate();
 
-    // -- Precompute LED locations for surface view
-    computePixelOffsets();
+    // -- Initialize the surface view
+    //initializeSurface();
 }
 
 void changeToPattern(Mode newmode)
@@ -656,27 +870,36 @@ void setup()
     delay(500);
 
     // -- Set up the pins
+    if (ONE_CELL_MODE) {
+        pinMode(LED_PIN, OUTPUT);
+        pinMode(IR_INPUT_PIN, INPUT);
+    } else {
+        pinMode(LED_PIN_1, OUTPUT);
+        pinMode(LED_PIN_2, OUTPUT);
+        pinMode(LED_PIN_3, OUTPUT);
     
-    pinMode(LED_PIN_1, OUTPUT);
-    pinMode(LED_PIN_2, OUTPUT);
-    pinMode(LED_PIN_3, OUTPUT);
-    
-    for (int i = 0; i < 4; i++) {
-        pinMode(IR_INPUT_PIN[i], INPUT);
-    }
+        for (int i = 0; i < 4; i++) {
+            pinMode(IR_INPUTS[i], INPUT);
+        }
 
-    pinMode(IR_CHANNEL_BIT_0, OUTPUT);
-    pinMode(IR_CHANNEL_BIT_1, OUTPUT);
-    pinMode(IR_CHANNEL_BIT_2, OUTPUT);
-    pinMode(IR_CHANNEL_BIT_3, OUTPUT);
+        pinMode(IR_CHANNEL_BIT_0, OUTPUT);
+        pinMode(IR_CHANNEL_BIT_1, OUTPUT);
+        pinMode(IR_CHANNEL_BIT_2, OUTPUT);
+        pinMode(IR_CHANNEL_BIT_3, OUTPUT);
+    }
 
     Serial.begin(115200);
     delay(200);
 
     // -- Add all the LEDs
-    FastLED.addLeds<CHIPSET, LED_PIN_1, COLOR_ORDER>(g_LEDs, NUM_LEDS_1).setCorrection( TypicalLEDStrip );
-    FastLED.addLeds<CHIPSET, LED_PIN_2, COLOR_ORDER>(g_LEDs, NUM_LEDS_1, NUM_LEDS_2).setCorrection( TypicalLEDStrip );
-    FastLED.addLeds<CHIPSET, LED_PIN_3, COLOR_ORDER>(g_LEDs, NUM_LEDS_1 + NUM_LEDS_2, NUM_LEDS_3).setCorrection( TypicalLEDStrip );
+    if (ONE_CELL_MODE) {
+        FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(g_LEDs, NUM_LEDS).setCorrection( TypicalLEDStrip );
+    } else {
+        FastLED.addLeds<CHIPSET, LED_PIN_1, COLOR_ORDER>(g_LEDs, NUM_LEDS_1).setCorrection( TypicalLEDStrip );
+        FastLED.addLeds<CHIPSET, LED_PIN_3, COLOR_ORDER>(g_LEDs, NUM_LEDS_1 + NUM_LEDS_2, NUM_LEDS_3).setCorrection( TypicalLEDStrip );
+        FastLED.addLeds<CHIPSET, LED_PIN_2, COLOR_ORDER>(g_LEDs, NUM_LEDS_1, NUM_LEDS_2).setCorrection( TypicalLEDStrip );
+    }
+    
     FastLED.setBrightness(g_Brightness);
 
     // -- Initialize the cells and calibrate
@@ -705,26 +928,24 @@ void loop()
     uint32_t start = millis();
 
     // -- Sense the IR and render the pattern
-    if (g_Mode == SurfaceMode) {
-        TestSurface();
-    }
-
     for (int i = 0; i < NUM_CELLS; i++) {
         if (g_Mode == SolidMode)    g_Cells[i]->SolidPattern();
         if (g_Mode == ConfettiMode) g_Cells[i]->ConfettiPattern();
         if (g_Mode == GearMode)     g_Cells[i]->GearPattern(400, 8000);
         if (g_Mode == FireMode)     g_Cells[i]->FirePattern(30, 50);
-        if (g_Mode == SurfaceMode)  g_Cells[i]->SurfacePattern();
+        // if (g_Mode == SurfaceMode)  g_Cells[i]->SurfacePattern();
     }
 
-    uint32_t cur_time = millis();
-    if (cur_time - last_change > TIME_PER_PATTERN) {
-        last_change = cur_time;
-        if (g_Mode == SolidMode)         changeToPattern(ConfettiMode);
-        else if (g_Mode == ConfettiMode) changeToPattern(GearMode);
-        else if (g_Mode == GearMode)     changeToPattern(FireMode);
-        else if (g_Mode == FireMode)     changeToPattern(SolidMode);
-        // else if (g_Mode == SurfaceMode)     changeToPattern(SolidMode);
+    if (g_Cycle) {
+        // -- Periodically switch to a different mode
+        uint32_t cur_time = millis();
+        if (cur_time - last_change > TIME_PER_PATTERN) {
+            last_change = cur_time;
+            if (g_Mode == SolidMode)         changeToPattern(ConfettiMode);
+            else if (g_Mode == ConfettiMode) changeToPattern(GearMode);
+            else if (g_Mode == GearMode)     changeToPattern(FireMode);
+            else if (g_Mode == FireMode)     changeToPattern(SolidMode);
+        }
     }
     
     FastLED.show();
@@ -732,6 +953,7 @@ void loop()
     g_total_time += (end - start);
     g_frame_count++;
 
+    /** Just for testing: compute the time to render a frame
     if (g_frame_count == 40) {
         float fps = ((float) g_total_time) / ((float) g_frame_count);
         Serial.print("ms per frame: ");
@@ -739,6 +961,7 @@ void loop()
         g_frame_count = 0;
         g_total_time = 0;
     }
+    */
 
     delay(1000/FRAMES_PER_SECOND);
 }

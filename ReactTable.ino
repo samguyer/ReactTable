@@ -6,7 +6,7 @@
  *  This code supports four different animations. You can choose one of them, 
  *  or set "cycle" to true to cycle through all of them at some set interval.
  */
-enum Mode { SolidMode, ConfettiMode, GearMode, FireMode };
+enum Mode { SolidMode, ConfettiMode, SpinnerMode, GearMode, FireMode, SurfaceMode, AttractorMode };
 
 // -- Mode choice
 Mode g_Mode = SolidMode;
@@ -24,7 +24,7 @@ const int TIME_PER_PATTERN = 15000;
  *  rest of the configuration.
  */
 
- #define ONE_CELL_MODE true
+ #define ONE_CELL_MODE false
 
  #define IR_INPUT_PIN 27
  #define LED_PIN 26
@@ -65,7 +65,7 @@ int IR_INPUTS[] = { 27, 33, 34, 35 };
  * My table has 61 cells, with 12 WS2812 LEDs per cell. The LEDs are
  * chained together to form a single, logical strip.
  */
-#ifdef ONE_CELL_MODE
+#if ONE_CELL_MODE
 #define NUM_CELLS 1
 #else
 #define NUM_CELLS 61
@@ -81,7 +81,7 @@ int IR_INPUTS[] = { 27, 33, 34, 35 };
  * configuration and the number of LEDs on each pin.
  * 
  */
-#define LED_PIN_1 26
+#define LED_PIN_1 17
 #define NUM_LEDS_1 (22 * LEDS_PER_CELL)
 
 #define LED_PIN_2 16
@@ -91,7 +91,7 @@ int IR_INPUTS[] = { 27, 33, 34, 35 };
 #define NUM_LEDS_3 (17 * LEDS_PER_CELL)
 
 /** Default brightness */
-uint8_t g_Brightness = 60;
+uint8_t g_Brightness = 50;
 
 /** Kind of LEDs */
 #define COLOR_ORDER GRB
@@ -485,6 +485,23 @@ public:
         }
     }
 
+    void SpinnerPattern(int min_speed, int max_speed)
+    {
+        // -- Initialize if necessary
+        if (m_new_pattern) {
+            m_position = random16();
+            m_palette = RainbowColors_p;
+            m_new_pattern = false;
+        }
+
+        setAllLEDs(CRGB::Black); // fadeToBlackBy(80);
+        uint8_t level = senseIRwithDecay(12, 4);
+        int speed = map(level, 0, 255, max_speed, min_speed);
+        m_position += speed;
+        if (level > 230) level = 230;
+        setPixelHue(m_position, level);
+    }
+
     void GearPattern(int min_speed, int max_speed)
     {
         // -- Initialize if necessary
@@ -545,11 +562,11 @@ public:
 
     CRGB getSurfaceColor(int x, int y)
     {
-      if (x < 0 || x >= SURFACE_WIDTH)  return CRGB::Black;
-      if (y < 0 || y >= SURFACE_HEIGHT) return CRGB::Black;
-      uint8_t hue = g_Surface[x][y];
-      if (hue == 255) return CRGB::Black;
-      return ColorFromPalette(m_palette, hue);
+        if (x < 0 || x >= SURFACE_WIDTH)  return CRGB::Black;
+        if (y < 0 || y >= SURFACE_HEIGHT) return CRGB::Black;
+        uint8_t hue = g_Surface[x][y];
+        if (hue == 255) return CRGB::Black;
+        return ColorFromPalette(m_palette, hue);
     }
 
     void setSurfacePixel(int led_index)
@@ -611,6 +628,20 @@ public:
             setSurfacePixel(i);
         }
     }
+
+    void AttractorPattern(int center_x, int center_y)
+    {
+        if (m_new_pattern) {
+            m_palette = RainbowColors_p;
+            m_new_pattern = false;
+        }
+        int dist_x = m_ring_x - center_x;
+        int dist_y = m_ring_y - center_y;
+        int dist = dist_x * dist_x + dist_y * dist_y;
+        int val = 255 - dist;
+        setAllLEDsHue(val);
+    }
+
 };
 
 // === Surfaces =============================================================
@@ -673,8 +704,57 @@ uint8_t getSurface(int x, int y)
     }
 }
 
+void ComputeCenter(int & center_x, int & center_y)
+{
+    uint32_t total_x = 0;
+    uint32_t total_y = 0;
+    uint32_t total_weight = 0;
+
+    for (int i = 0; i < NUM_CELLS; i++) {
+        Cell * cell = g_Cells[i];
+        uint32_t x = cell->getRingX();
+        uint32_t y = cell->getRingY();
+        uint32_t val = (255 - cell->senseIR())/16;
+        total_x += x * val;        
+        total_y += y * val;
+        total_weight += val;
+    }
+
+    if (total_weight > 0) {
+        center_x = total_x / total_weight;
+        center_y = total_y / total_weight;
+        /*
+        Serial.print("Center ");
+        Serial.print(center_x);
+        Serial.print("  ");
+        Serial.print(center_y);
+        Serial.println();
+        */
+    }
+}
+
 void DiffusionSurface()
 {
+    for (int x = 0; x < SURFACE_WIDTH; x++) {
+        for (int y = 0; y < SURFACE_HEIGHT; y++) {
+            setSurface(x,y, x+y);
+        }
+    }
+    /*
+   for (int i = 0; i < NUM_CELLS; i++) {
+        Cell * cell = g_Cells[i];
+        int x = cell->getSurfaceX();
+        int y = cell->getSurfaceY();
+        uint8_t val = cell->senseIR();
+        for (int j = -5; j < 5; j++) {
+            for (int k = -5; k < 5; k++) {
+                setSurface(x+j, y+k, val); 
+            }
+        }
+    }
+    */
+    
+    /*
     for (int i = 0; i < NUM_CELLS; i++) {
         Cell * cell = g_Cells[i];
         int x = cell->getSurfaceX();
@@ -700,6 +780,7 @@ void DiffusionSurface()
             g_nextSurface[x][y] = 0;
         }
     }
+    */
 }
 
 class Particle
@@ -848,7 +929,7 @@ void initialize()
     calibrate();
 
     // -- Initialize the surface view
-    //initializeSurface();
+    initializeSurface();
 }
 
 void changeToPattern(Mode newmode)
@@ -922,18 +1003,25 @@ void setup()
 
 uint32_t g_total_time = 0;
 uint32_t g_frame_count = 0;
+int g_center_x = 0;
+int g_center_y = 0;
 
 void loop()
 {
     uint32_t start = millis();
 
+    // if (g_Mode == SurfaceMode) DiffusionSurface();
+    ComputeCenter(g_center_x, g_center_y);
+
     // -- Sense the IR and render the pattern
     for (int i = 0; i < NUM_CELLS; i++) {
         if (g_Mode == SolidMode)    g_Cells[i]->SolidPattern();
         if (g_Mode == ConfettiMode) g_Cells[i]->ConfettiPattern();
+        if (g_Mode == SpinnerMode)  g_Cells[i]->SpinnerPattern(400, 8000);
         if (g_Mode == GearMode)     g_Cells[i]->GearPattern(400, 8000);
         if (g_Mode == FireMode)     g_Cells[i]->FirePattern(30, 50);
-        // if (g_Mode == SurfaceMode)  g_Cells[i]->SurfacePattern();
+        if (g_Mode == SurfaceMode)  g_Cells[i]->SurfacePattern();
+        if (g_Mode == AttractorMode)  g_Cells[i]->AttractorPattern(g_center_x, g_center_y);
     }
 
     if (g_Cycle) {
@@ -942,7 +1030,8 @@ void loop()
         if (cur_time - last_change > TIME_PER_PATTERN) {
             last_change = cur_time;
             if (g_Mode == SolidMode)         changeToPattern(ConfettiMode);
-            else if (g_Mode == ConfettiMode) changeToPattern(GearMode);
+            else if (g_Mode == ConfettiMode) changeToPattern(SpinnerMode);
+            else if (g_Mode == SpinnerMode)  changeToPattern(GearMode);
             else if (g_Mode == GearMode)     changeToPattern(FireMode);
             else if (g_Mode == FireMode)     changeToPattern(SolidMode);
         }
@@ -965,4 +1054,3 @@ void loop()
 
     delay(1000/FRAMES_PER_SECOND);
 }
-

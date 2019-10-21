@@ -1,4 +1,6 @@
+//#define FASTLED_ESP32_I2S
 #include <FastLED.h>
+#include <adel.h>
 
 // === Pattern mode =========================================================
 
@@ -6,14 +8,19 @@
  *  This code supports four different animations. You can choose one of them, 
  *  or set "cycle" to true to cycle through all of them at some set interval.
  */
-enum Mode { SolidMode, ConfettiMode, SpinnerMode, GearMode, FireMode, SurfaceMode, AttractorMode };
+enum Mode { SolidMode, ConfettiMode, SpinnerMode, GearMode, FireMode,
+            SurfaceMode, RippleMode, DiffusionMode, AttractorMode, MirrorMode };
+
+#define NUM_MODES 10
 
 // -- Mode choice
-Mode g_Mode = SolidMode;
+Mode g_Mode = SurfaceMode;
 
 // -- To cycle modes, set cycle to true and choose an interval (in milliseconds)
 bool g_Cycle = false;
 const int TIME_PER_PATTERN = 15000;
+
+#define MODE_PIN 14
 
 // === One-cell pin settings ================================================
 
@@ -58,63 +65,53 @@ const int TIME_PER_PATTERN = 15000;
  * that to the channel selectors (above). Then we read in the input on
  * the pin specified by the next two bits of the input.
  */
-int IR_INPUTS[] = { 27, 33, 34, 35 };
+int IR_INPUTS[] = {32, 33, 34, 35}; // { 27, 33, 34, 35 };
 
 /** Cell configuration
  *
- * My table has 61 cells, with 12 WS2812 LEDs per cell. The LEDs are
- * chained together to form a single, logical strip.
+ * My table has 61 cells, with 12 WS2812 LEDs per cell.
  */
-#if ONE_CELL_MODE
-#define NUM_CELLS 1
-#else
 #define NUM_CELLS 61
-#endif
-
 #define LEDS_PER_CELL 12
 #define NUM_LEDS (NUM_CELLS * LEDS_PER_CELL)
 
-/** LED strip configuration 
- *
- * To improve performance, I broke the strip into three segments, each
- * one attached to its own pin. Make sure the wiring matches the pin
- * configuration and the number of LEDs on each pin.
- * 
- */
-#define LED_PIN_1 17
-#define NUM_LEDS_1 (22 * LEDS_PER_CELL)
+class Cell;
+Cell * g_Cells[NUM_CELLS];
 
-#define LED_PIN_2 16
-#define NUM_LEDS_2 (22 * LEDS_PER_CELL)
-
-#define LED_PIN_3  4
-#define NUM_LEDS_3 (17 * LEDS_PER_CELL)
-
-/** Default brightness */
-uint8_t g_Brightness = 50;
+/** Storage for LEDs */
+CRGB g_LEDs[NUM_LEDS];
 
 /** Kind of LEDs */
 #define COLOR_ORDER GRB
 #define CHIPSET     WS2812
 
+/** LED strip setup
+ *  Set up the wiring of the LED strips here. I've wired mine so that each pair of 
+ *  columns of rings (a total of 11 rings) has a data input. That's 11 * 12 = 132
+ *  LEDs on each pin, except for the last one.
+ */
+void LED_setup()
+{
+    FastLED.addLeds<CHIPSET, 17, COLOR_ORDER>(g_LEDs, 132*0, 132).setCorrection( TypicalLEDStrip );
+    FastLED.addLeds<CHIPSET, 16, COLOR_ORDER>(g_LEDs, 132*1, 132).setCorrection( TypicalLEDStrip );
+    FastLED.addLeds<CHIPSET,  4, COLOR_ORDER>(g_LEDs, 132*2, 132).setCorrection( TypicalLEDStrip );
+    FastLED.addLeds<CHIPSET,  2, COLOR_ORDER>(g_LEDs, 132*3, 132).setCorrection( TypicalLEDStrip );
+    FastLED.addLeds<CHIPSET, 15, COLOR_ORDER>(g_LEDs, 132*4, 132).setCorrection( TypicalLEDStrip );
+    FastLED.addLeds<CHIPSET, 12, COLOR_ORDER>(g_LEDs, 132*5, 72).setCorrection( TypicalLEDStrip );
+}
+
 /** Animation speed */
 #define FRAMES_PER_SECOND 30
 
-/** Storage for LEDs */
-CRGB g_LEDs[NUM_LEDS];
-
-// === Cell mapping =========================================================
+/** Default brightness */
+uint8_t g_Brightness = 40;
 
 /** Cell mapping
  *
- * This data structure connects together the IR input information with
- * the LED information. It holds the IR input and the index of the
- * LED ring for that cell. Both values are between 0 and NUM_CELLS
- *
- * The reason we need this mapping is that the IR inputs are not wired
- * in the same order as the LED rings. I probably could have done it
- * that way, but I felt like it was easier to make the wiring simple
- * and fix it in software.
+ * This data structure holds the physical information about a cell:
+ *     ir_index: the index of the IR sensor in the multiplexer
+ *     ring_index: the index of the LED ring in the logical "strip" of LEDs
+ *     x,y: the position of the center of the cell in centimeters
 */
 
 struct CellMapEntry
@@ -126,41 +123,28 @@ struct CellMapEntry
 };
 
 CellMapEntry g_CellMap[] = {
-    {  0, 60, 0, 0 }, {  1, 49, 2, 0 }, {  2, 38, 4, 0 }, {  3, 27, 6, 0 }, {  4, 16, 8, 0 }, {  5, 5, 10, 0 },
-    {  6, 54, 1, 1 }, {  7, 43, 3, 1 }, {  8, 32, 5, 1 }, {  9, 21, 7, 1 }, { 10, 10, 9, 1 },
-    { 11, 59, 0, 2 }, { 12, 48, 2, 2 }, { 13, 37, 4, 2 }, { 14, 26, 6, 2 }, { 15, 15, 8, 2 }, { 16, 4, 10, 2 },
-    { 17, 53, 1, 3 }, { 18, 42, 3, 3 }, { 19, 31, 5, 3 }, { 20, 20, 7, 3 }, { 21,  9, 9, 3 },
-    { 22, 58, 0, 4 }, { 23, 47, 2, 4 }, { 24, 36, 4, 4 }, { 25, 25, 6, 4 }, { 26, 14, 8, 4 }, { 27, 3, 10, 4 },
-    { 28, 52, 1, 5 }, { 29, 41, 3, 5 }, { 30, 30, 5, 5 }, { 31, 19, 7, 5 }, { 32,  8, 9, 5 },
-    { 33, 57, 0, 6 }, { 34, 46, 2, 6 }, { 35, 35, 4, 6 }, { 36, 24, 6, 6 }, { 37, 13, 8, 6 }, { 38, 2, 10, 6 },
-    { 39, 51, 1, 7 }, { 40, 40, 3, 7 }, { 41, 29, 5, 7 }, { 42, 18, 7, 7 }, { 43,  7, 9, 7 },
-    { 44, 56, 0, 8 }, { 45, 45, 2, 8 }, { 46, 34, 4, 8 }, { 47, 23, 6, 8 }, { 48, 12, 8, 8 }, { 49, 1, 10, 8 },
-    { 50, 50, 1, 9 }, { 51, 39, 3, 9 }, { 52, 28, 5, 9 }, { 53, 17, 7, 9 }, { 54,  6, 9, 9 },
-    { 55, 55, 0, 10}, { 56, 44, 2, 10}, { 57, 33, 4, 10}, { 58, 22, 6, 10}, { 59, 11, 8, 10}, { 60, 0, 10, 10 }
+    {  0, 60, 2,  2 }, {  1, 49, 12,  2 }, {  2, 38, 22,  2 }, {  3, 27, 32,  2 }, {  4, 16, 42,  2 }, {  5, 5, 52,  2 },
+    {  6, 54, 7,  5 }, {  7, 43, 17,  5 }, {  8, 32, 27,  5 }, {  9, 21, 37,  5 }, { 10, 10, 47,  5 },
+    { 11, 59, 2,  8 }, { 12, 48, 12,  8 }, { 13, 37, 22,  8 }, { 14, 26, 32,  8 }, { 15, 15, 42,  8 }, { 16, 4, 52,  8 },
+    { 17, 53, 7, 11 }, { 18, 42, 17, 11 }, { 19, 31, 27, 11 }, { 20, 20, 37, 11 }, { 21,  9, 47, 11 },
+    { 22, 58, 2, 14 }, { 23, 47, 12, 14 }, { 24, 36, 22, 14 }, { 25, 25, 32, 14 }, { 26, 14, 42, 14 }, { 27, 3, 52, 14 },
+    { 28, 52, 7, 17 }, { 29, 41, 17, 17 }, { 30, 30, 27, 17 }, { 31, 19, 37, 17 }, { 32,  8, 47, 17 },
+    { 33, 57, 2, 20 }, { 34, 46, 12, 20 }, { 35, 35, 22, 20 }, { 36, 24, 32, 20 }, { 37, 13, 42, 20 }, { 38, 2, 52, 20 },
+    { 39, 51, 7, 23 }, { 40, 40, 17, 23 }, { 41, 29, 27, 23 }, { 42, 18, 37, 23 }, { 43,  7, 47, 23 },
+    { 44, 56, 2, 26 }, { 45, 45, 12, 26 }, { 46, 34, 22, 26 }, { 47, 23, 32, 26 }, { 48, 12, 42, 26 }, { 49, 1, 52, 26 },
+    { 50, 50, 7, 29 }, { 51, 39, 17, 29 }, { 52, 28, 27, 29 }, { 53, 17, 37, 29 }, { 54,  6, 47, 29 },
+    { 55, 55, 2, 32 }, { 56, 44, 12, 32 }, { 57, 33, 22, 32 }, { 58, 22, 32, 32 }, { 59, 11, 42, 32 }, { 60, 0, 52, 32 }
 };
-
-// === Single surface view ==================================================
-
-/** Cell coordinate system
- *
- * The cells are arranged into 11 rows and 11 columns. The coordinates
- * provided in the CellInfo below should be in the cell coordinates.
- * The surface coordinates are computed from that.
- */
-#define CELL_COLS 11
-#define CELL_ROWS 11
 
 /** Surface coordinate system
  *
- * The surface is a logical 2-D grid scaled up from the actual cell
- * coordinate system. In surface mode, the LEDs sample their values
- * from this single grid, allowing the entire table to be treated as a
- * single image. My table has a surface 65 units wide and 39 units tall.
+ * The surface is a logical 2-D grid measured in centimeters. In surface 
+ * mode, the LEDs sample their values from this single grid, allowing the 
+ * entire table to be treated as a single image.
  */
-#define SURFACE_WIDTH_SCALE  5
-#define SURFACE_HEIGHT_SCALE 3
-#define SURFACE_WIDTH  ((CELL_COLS+2) * SURFACE_WIDTH_SCALE)
-#define SURFACE_HEIGHT ((CELL_ROWS+2) * SURFACE_HEIGHT_SCALE)
+
+#define SURFACE_WIDTH  54
+#define SURFACE_HEIGHT 34
 
 /** Surface
  * 
@@ -168,54 +152,104 @@ CellMapEntry g_CellMap[] = {
  */
 uint8_t  g_Surface[SURFACE_WIDTH][SURFACE_HEIGHT];
 
-/** Float to fixed
- *
- * Utility function to convert a float to a 16-bit fixed-precision
- * number (8 bits for the whole number, 8 bits for the fraction).
- */
-uint16_t float_to_fixed(float v)
-{
-    uint8_t whole = (uint8_t) v;
-    uint8_t frac = (uint8_t) (256.0 * (v - ((float)whole)));
-    uint16_t result = whole;
-    result <<= 8;
-    result |= frac;
-    return result;
-}
-
 /** Ring coordinate mapping
  *
- * Precompute the offsets for each LED in a ring relative to the
- * center.  The values are 16-bit fixed-precision numbers in the
- * surface coordinate system.
+ * Precompute the position of each LED relative to the surface coordinate
+ * system. The result is a sampling pattern for each LED: surface elements
+ * and ratios of mixing those elements.
+ * 
+ * My model: a ring has a diameter of 4cm; each LED is .5cm square, so the 
+ * inner diameter of the ring is 3cm. The middle of the ring is at 3.5cm.
  */
 
-uint16_t g_pixel_x[LEDS_PER_CELL];
-uint16_t g_pixel_y[LEDS_PER_CELL];
+struct SurfaceSample
+{
+    int dx;
+    int dy;
+    int top_left_part;
+    int top_right_part;
+    int bottom_left_part;
+    int bottom_right_part;
+};
+
+SurfaceSample g_SurfaceSamples[LEDS_PER_CELL];
+
+int modi(float v, int * i)
+{
+    double v_whole, v_frac;
+    v_frac = modf(v, &v_whole);
+    int vi = (int) v_whole;
+    int vf = (int) (10.0 * v_frac);
+
+    *i = vi;
+    return vf;
+}
 
 void computePixelOffsets()
 {
+    Serial.println();
     for (int i = 0; i < LEDS_PER_CELL; i++) {
         // -- Divide the ring into 12 equal angles
         float frac = ((float) i) / ((float) LEDS_PER_CELL);
         float angle = frac * 3.1415926535897 * 2.0;
         
-        // -- X and Y along a ring of diameter 4
-        //    These values will serve as the top left corner of a box
-        //    that samples the underlying image.
-        float x = (cos(angle) + 1.0) * 2.0;
-        float y = (sin(angle) + 1.0) * 2.0;
+        // -- X and Y along a ring of diameter 3.0cm
+        //    These values correspond to the top left corner of each LED
+        float x = (cos(angle) + 1.0) * 1.5;
+        float y = (sin(angle) + 1.0) * 1.5;
 
-        // -- Convert to fixed point values
-        g_pixel_x[i] = float_to_fixed(x);
-        g_pixel_y[i] = float_to_fixed(y);
+        // -- Figure out how much of each surface pixel should be sampled by the LED
+        int xl, xlf;
+        xlf = modi(x, &xl);
+
+        int xr, xrf;
+        xrf = modi(x + 0.99, &xr);
+
+        int yt, ytf;
+        ytf = modi(y, &yt);
+
+        int yb, ybf;
+        ybf = modi(y + 0.99, &yb);
+
+        int top_left = (10 - xlf) * (10 - ytf);
+        
+        int top_right = 0;
+        if (xl != xr) {
+            top_right = xrf * (10 - ytf);
+        }
+        
+        int bottom_left = 0;
+        if (yt != yb) {
+            bottom_left = (10 - xlf) * ybf;
+        }
+        
+        int bottom_right = 0;
+        if ((xl != xr) && (yt != yb)) {
+            bottom_right = xrf * ybf;
+        }
+
+        g_SurfaceSamples[i].dx = xl;
+        g_SurfaceSamples[i].dy = yt;
+        g_SurfaceSamples[i].top_left_part = top_left;
+        g_SurfaceSamples[i].top_right_part = top_right;
+        g_SurfaceSamples[i].bottom_left_part = bottom_left;
+        g_SurfaceSamples[i].bottom_right_part = bottom_right;
+        
+        Serial.print("Pixel "); Serial.print(i); Serial.print(" at ");
+        Serial.print(x); Serial.print(" , "); Serial.print(y);
+        Serial.print(" : \n");
+        Serial.print("    X left  : "); Serial.print(xl); Serial.print("+"); Serial.print(xlf); Serial.println();
+        Serial.print("    X right : "); Serial.print(xr); Serial.print("+"); Serial.print(xrf); Serial.println();
+        Serial.print("    Y top   : "); Serial.print(yt); Serial.print("+"); Serial.print(ytf); Serial.println();
+        Serial.print("    Y bottom: "); Serial.print(yb); Serial.print("+"); Serial.print(ybf); Serial.println();
+        Serial.print("    Top left     : "); Serial.print(top_left);
+        Serial.print("    Top right    : "); Serial.print(top_right);
+        Serial.print("    Bottom left  : "); Serial.print(bottom_left);
+        Serial.print("    Bottom right : "); Serial.print(bottom_right); Serial.println();
     }        
 }
 
 // === Cells ================================================================
-
-class Cell;
-Cell * g_Cells[NUM_CELLS];
 
 /** Cell 
  * 
@@ -240,10 +274,10 @@ protected:
     uint16_t        m_level;
 
     // -- Physical position
-    uint8_t         m_ring_x;
-    uint8_t         m_ring_y;
-    uint8_t         m_surface_x;
-    uint8_t         m_surface_y;
+    int             m_center_x;
+    int             m_center_y;
+    int             m_left;
+    int             m_top;
 
     // -- Data for the patterns
     uint16_t        m_position;
@@ -266,8 +300,8 @@ public:
           m_ir_min(100),
           m_ir_max(0),
           m_level(0),
-          m_ring_x(info.m_x),
-          m_ring_y(info.m_y),
+          m_center_x(info.m_x),
+          m_center_y(info.m_y),
           m_position(0),
           m_new_pattern(true)
     {
@@ -277,18 +311,15 @@ public:
         m_ir_channel_selector[2] = (m_ir_channel & 0x4) ? HIGH : LOW;
         m_ir_channel_selector[3] = (m_ir_channel & 0x8) ? HIGH : LOW;
 
-        // -- Compute the top left corner of the ring in surface
-        //    coordinates.
-        m_surface_x = ((m_ring_x + 1) * SURFACE_WIDTH_SCALE);
-        m_surface_y = ((m_ring_y + 1) * SURFACE_HEIGHT_SCALE);
+        // -- Compute top left for convenience
+        m_left = m_center_x - 2;
+        m_top  = m_center_y - 2;
     }
 
     // ----- Getters --------
 
-    uint16_t getRingX() const { return m_ring_x; }
-    uint16_t getRingY() const { return m_ring_y; }
-    int getSurfaceX() const { return m_surface_x; }
-    int getSurfaceY() const { return m_surface_y; }
+    int getCenterX() const { return m_center_x; }
+    int getCenterY() const { return m_center_y; }
 
     // ----- IR Sensors -----
 
@@ -560,61 +591,15 @@ public:
 
     // --- Surface patterns ---------------
 
-    CRGB getSurfaceColor(int x, int y)
+    CRGB getSurfaceColor(int x, int y, uint8_t scaledown)
     {
         if (x < 0 || x >= SURFACE_WIDTH)  return CRGB::Black;
         if (y < 0 || y >= SURFACE_HEIGHT) return CRGB::Black;
         uint8_t hue = g_Surface[x][y];
         if (hue == 255) return CRGB::Black;
-        return ColorFromPalette(m_palette, hue);
-    }
-
-    void setSurfacePixel(int led_index)
-    {
-        // -- Compute the coordinates of this LED
-        uint16_t x = m_ring_x + g_pixel_x[led_index];
-        uint16_t y = m_ring_y + g_pixel_y[led_index];
-
-        // -- Get the coordinates of the top left pixel
-        uint16_t x_whole = x >> 8;
-        uint16_t y_whole = y >> 8;
-
-        // -- Get the fractional part, scale down to 0-15
-        uint8_t x_frac = (x & 0xFF) >> 4;
-        uint8_t y_frac = (y & 0xFF) >> 4;
-
-        // -- Sample up to four pixels
-
-        // -- Top left
-        CRGB color = getSurfaceColor(x_whole, y_whole);
-        uint8_t frac_TL = ((0x10 - x_frac) * (0x10 - y_frac)) - 1;
-        color.nscale8_video(frac_TL);
-
-        if (x_frac > 0) {
-            // -- LED crosses into the adjacent pixel to the right
-            CRGB color_TR = getSurfaceColor(x_whole + 1, y_whole);
-            uint8_t frac_TR = x_frac * (0x10 - y_frac);
-            color_TR.nscale8_video(frac_TR);
-            color += color_TR;
-        }
-
-        if (y_frac > 0) {
-            // -- LED crosses into the adjacent pixel below
-            CRGB color_BL = getSurfaceColor(x_whole, y_whole + 1);
-            uint8_t frac_BL = (0x10 - x_frac) * y_frac;
-            color_BL.nscale8_video(frac_BL);
-            color += color_BL;
-        }
-
-        if (x_frac > 0 and y_frac > 0) {
-            // -- LED crosses both boundaries into the corner LED
-            CRGB color_BR = getSurfaceColor(x_whole + 1, y_whole + 1);
-            uint8_t frac_BR = x_frac * y_frac;
-            color_BR.nscale8_video(frac_BR);
-            color += color_BR;
-        }
-
-        setLED(led_index, color);
+        CRGB color = ColorFromPalette(m_palette, hue);
+        color %= scaledown;
+        return color;
     }
 
     void SurfacePattern()
@@ -625,37 +610,35 @@ public:
         }
 
         for (int i = 0; i < LEDS_PER_CELL; i++) {
-            setSurfacePixel(i);
+            // -- Compute the coordinates of this LED
+            SurfaceSample & s = g_SurfaceSamples[i];
+
+            // -- Compute the absolute position of this LED on the surface
+            int x = m_left + s.dx;
+            int y = m_top + s.dy;
+    
+            // -- Look up the surface color and set the LED
+            CRGB color = getSurfaceColor(x, y, s.top_left_part);
+
+            if (s.top_right_part > 0) {
+                color += getSurfaceColor(x+1, y, s.top_right_part);
+            }
+
+            if (s.bottom_left_part > 0) {
+                color += getSurfaceColor(x, y+1, s.bottom_left_part);
+            }
+
+            if (s.bottom_right_part > 0) {
+                color += getSurfaceColor(x+1, y+1, s.bottom_right_part);
+            }
+            
+            setLED(i, color);
         }
     }
-
-    void AttractorPattern(int center_x, int center_y)
-    {
-        if (m_new_pattern) {
-            m_palette = RainbowColors_p;
-            m_new_pattern = false;
-        }
-        int dist_x = m_ring_x - center_x;
-        int dist_y = m_ring_y - center_y;
-        int dist = dist_x * dist_x + dist_y * dist_y;
-        int val = 255 - dist;
-        setAllLEDsHue(val);
-    }
-
 };
 
 // === Surfaces =============================================================
 
-Cell * g_SurfaceCells[SURFACE_WIDTH][SURFACE_HEIGHT];
-uint8_t g_Dist[20][20];
-uint8_t g_nextSurface[SURFACE_WIDTH][SURFACE_HEIGHT];
-
-/** Surface cells
- *  
- *  For each pixel on the surface, store the corresponding ring center (if 
- *  there is one), or NULL. This mapping allows us to quickly visit all of
- *  the elements of the surface and know which ones have sensors.
- */
 void initializeSurface()
 {
     // -- Precompute LED locations for surface view
@@ -663,35 +646,32 @@ void initializeSurface()
 
     for (int x = 0; x < SURFACE_WIDTH; x++) {
         for (int y = 0; y < SURFACE_HEIGHT; y++) {
-            g_SurfaceCells[x][y] = NULL;
-        }
-    }
-
-    for (int i = 0; i < NUM_CELLS; i++) {
-        Cell * cell = g_Cells[i];
-        int x = cell->getRingX();
-        int y = cell->getRingY();
-        g_SurfaceCells[cell->getRingX()][cell->getRingY()] = cell;
-    }
-
-    for (int dx = -10; dx < 10; dx++) {
-        for (int dy = -10; dy < 10; dy++) {
-            uint16_t dist = sqrt16(dx * dx + dy * dy);
-            g_Dist[dx+10][dy+10] = dist;
-        }
-    }
-
-    for (int x = 0; x < SURFACE_WIDTH; x++) {
-        for (int y = 0; y < SURFACE_HEIGHT; y++) {
-            g_nextSurface[x][y] = 0;
+            g_Surface[x][y] = 255;
         }
     }
 }
 
-void setSurface(int x, int y, uint8_t val)
+bool setSurface(int x, int y, uint8_t val)
 {
     if (x >= 0 and x < SURFACE_WIDTH and y >= 0 and y < SURFACE_HEIGHT) {
         g_Surface[x][y] = val;
+        return true;
+    } else {
+        return false;
+    }
+}
+
+bool mixSurface(int x, int y, uint8_t val)
+{
+    if (x >= 0 and x < SURFACE_WIDTH and y >= 0 and y < SURFACE_HEIGHT) {
+        uint8_t old_val = g_Surface[x][y];
+        if (old_val != 255) {
+            val = (val + old_val)/2;
+        }
+        g_Surface[x][y] = val;
+        return true;
+    } else {
+        return false;
     }
 }
 
@@ -704,182 +684,236 @@ uint8_t getSurface(int x, int y)
     }
 }
 
-void ComputeCenter(int & center_x, int & center_y)
+uint16_t g_f_center_x = SURFACE_WIDTH/2;
+uint16_t g_f_center_y = SURFACE_HEIGHT/2;
+uint8_t g_val = 128;
+
+void ComputeCenterOfMass()
 {
     uint32_t total_x = 0;
     uint32_t total_y = 0;
     uint32_t total_weight = 0;
+    uint8_t m = 255;
 
     for (int i = 0; i < NUM_CELLS; i++) {
         Cell * cell = g_Cells[i];
-        uint32_t x = cell->getRingX();
-        uint32_t y = cell->getRingY();
-        uint32_t val = (255 - cell->senseIR())/16;
+        uint32_t x = cell->getCenterX();
+        uint32_t y = cell->getCenterY();
+        uint8_t v = cell->senseIR();
+        if (v < m) {
+            m = v;
+        }
+        
+        uint32_t val = (256 - v)/16;
         total_x += x * val;        
         total_y += y * val;
         total_weight += val;
     }
 
-    if (total_weight > 0) {
-        center_x = total_x / total_weight;
-        center_y = total_y / total_weight;
-        /*
-        Serial.print("Center ");
-        Serial.print(center_x);
-        Serial.print("  ");
-        Serial.print(center_y);
-        Serial.println();
-        */
+    if (total_weight > 5) {
+        // Serial.println(total_weight);
+        g_f_center_x = total_x / total_weight;
+        g_f_center_y = total_y / total_weight;
+        g_val = m;
     }
+}
+
+void ComputeCenter(bool decay)
+{
+    uint16_t new_center_x = 0;
+    uint16_t new_center_y = 0;
+    uint8_t m = 255;
+    for (int i = 0; i < NUM_CELLS; i++) {
+        Cell * cell = g_Cells[i];
+        uint32_t x = cell->getCenterX();
+        uint32_t y = cell->getCenterY();
+        uint8_t val = cell->senseIR();
+        if (val < m) {
+            m = val;
+            new_center_x = cell->getCenterX();
+            new_center_y = cell->getCenterY();
+        }
+    }
+    if (m < 250) {
+        if (decay) {
+            g_f_center_x = (g_f_center_x + new_center_x)/2;
+            g_f_center_y = (g_f_center_y + new_center_y)/2;
+        } else {
+            g_f_center_x = new_center_x;
+            g_f_center_y = new_center_y;
+        }
+        g_val = m;
+    }
+}
+
+void CenterSurface()
+{
+    int center_x;
+    int center_y;
+    ComputeCenter(true);
+    center_x = g_f_center_x; // fixed_to_int(g_f_center_x);
+    center_y = g_f_center_y; // fixed_to_int(g_f_center_y);
+    // Serial.print(center_x); Serial.print(" "); Serial.println(center_y);
+
+    for (int x = 0; x < SURFACE_WIDTH; x++) {
+        for (int y = 0; y < SURFACE_HEIGHT; y++) {
+            g_Surface[x][y] = 255;
+        }
+    }
+
+    int size = 15 - g_val/20;
+
+    int left = center_x - size;
+    int right = center_x + size;
+    int top = center_y - size;
+    int bottom = center_y + size;
+
+    for (int i = left; i < right; i++) {
+        setSurface(i, top, g_val);
+        setSurface(i, bottom, g_val);
+    }
+    
+    for (int j = top; j < bottom; j++) {
+        setSurface(left, j, g_val);
+        setSurface(right, j, g_val);
+    }
+
+    /*
+    for (int x = 0; x < SURFACE_WIDTH; x++) {
+        for (int y = 0; y < SURFACE_HEIGHT; y++) {
+            int diff_x = (x - center_x);
+            int diff_y = (y - center_y);
+            uint16_t dist2 = diff_x * diff_x + diff_y * diff_y;
+            if (dist2 < 150 - (g_val/2)) {
+                g_Surface[x][y] = g_val;
+            } else {
+                g_Surface[x][y] = 255;
+            }
+        }
+    }
+    */
+}
+
+class Ripple
+{
+private:
+    bool is_on;
+    uint16_t f_center_x;
+    uint16_t f_center_y;
+    uint8_t  radius;
+    uint8_t  color;
+    int num_visible;
+
+public:
+    Ripple() : is_on(false),
+               f_center_x(0),
+               f_center_y(0),
+               radius(0), 
+               color(128)
+    {}
+
+    bool isOn() { return is_on; }
+
+    void init(uint16_t f_x, uint16_t f_y, uint8_t c)
+    {
+        is_on = true;
+        f_center_x = f_x;
+        f_center_y = f_y;
+        radius = 1;
+        color = c;
+    }
+
+    void drawOne(uint16_t f_x, uint16_t f_y)
+    {
+        int x = f_x; // fixed_to_int(f_x);
+        int y = f_y; // fixed_to_int(f_y);
+        if (mixSurface(x, y, color)) {
+            num_visible++;
+        }
+    }
+
+    void draw()
+    {
+        if (is_on) {
+            num_visible = 0;
+            // int increment = 64/radius;
+            for (int angle = 0; angle < 64; angle += 4) {
+                // -- Values 0 -- 255
+                uint8_t x8 = cos8(angle) - 128;
+                uint8_t y8 = sin8(angle) - 128;
+                
+                uint16_t f_delta_x = (x8 * radius)/128;
+                uint16_t f_delta_y = (y8 * radius)/128;
+                drawOne(f_center_x  + f_delta_x, f_center_y + f_delta_y);
+                drawOne(f_center_x  - f_delta_x, f_center_y + f_delta_y);
+                drawOne(f_center_x  + f_delta_x, f_center_y - f_delta_y);
+                drawOne(f_center_x  - f_delta_x, f_center_y - f_delta_y);
+                
+            }
+        }
+ 
+        radius++;
+        if (radius > 50 || num_visible == 0) {
+            is_on = false;
+        }
+    }
+};
+
+#define NUM_RIPPLES 8
+Ripple g_ripples[NUM_RIPPLES];
+uint32_t g_last_new = 0;
+int g_old_center_x = 0;
+int g_old_center_y = 0;
+
+void RippleSurface()
+{
+    for (int x = 0; x < SURFACE_WIDTH; x++) {
+        for (int y = 0; y < SURFACE_HEIGHT; y++) {
+            g_Surface[x][y] = 255;
+        }
+    }
+
+    bool make_new = false;
+    uint32_t cur = millis();
+    if (cur - g_last_new > 150) {
+        g_last_new = cur;
+        ComputeCenter(false);
+        int center_x = g_f_center_x; // fixed_to_int(g_f_center_x);
+        int center_y = g_f_center_y; // fixed_to_int(g_f_center_y);
+        if ((center_x != g_old_center_x) || (center_y != g_old_center_y)) {
+            make_new = true;
+            g_old_center_x = center_x;
+            g_old_center_y = center_y;
+        }
+    }
+
+    for (int i = 0; i < NUM_RIPPLES; i++) {
+        if (g_ripples[i].isOn()) {
+            g_ripples[i].draw();
+        } else {
+            if (make_new) {
+                g_ripples[i].init(g_f_center_x, g_f_center_y, g_val);
+                make_new = false;
+            }
+        }
+    }
+}
+
+void AttractorSurface()
+{
+    
 }
 
 void DiffusionSurface()
 {
-    for (int x = 0; x < SURFACE_WIDTH; x++) {
-        for (int y = 0; y < SURFACE_HEIGHT; y++) {
-            setSurface(x,y, x+y);
-        }
-    }
-    /*
-   for (int i = 0; i < NUM_CELLS; i++) {
-        Cell * cell = g_Cells[i];
-        int x = cell->getSurfaceX();
-        int y = cell->getSurfaceY();
-        uint8_t val = cell->senseIR();
-        for (int j = -5; j < 5; j++) {
-            for (int k = -5; k < 5; k++) {
-                setSurface(x+j, y+k, val); 
-            }
-        }
-    }
-    */
     
-    /*
-    for (int i = 0; i < NUM_CELLS; i++) {
-        Cell * cell = g_Cells[i];
-        int x = cell->getSurfaceX();
-        int y = cell->getSurfaceY();
-        g_nextSurface[x][y] = 255 - cell->senseIR();
-    }
-
-    for (int x = 0; x < SURFACE_WIDTH; x++) {
-        for (int y = 0; y < SURFACE_HEIGHT; y++) {
-            if (g_nextSurface[x][y] == 0) {
-                uint16_t neighbors = getSurface(x-1, y-1) + getSurface(x, y-1) + getSurface(x+1, y-1) +
-                                     getSurface(x-1, y  )                      + getSurface(x+1, y  ) +
-                                     getSurface(x-1, y+1) + getSurface(x, y+1) + getSurface(x+1, y+1);
-                uint8_t newval = neighbors / 8;
-                g_nextSurface[x][y] = newval;
-            }
-        }
-    }
-
-    for (int x = 0; x < SURFACE_WIDTH; x++) {
-        for (int y = 0; y < SURFACE_HEIGHT; y++) {
-            g_Surface[x][y] = g_nextSurface[x][y];
-            g_nextSurface[x][y] = 0;
-        }
-    }
-    */
 }
 
-class Particle
-{
-private:
-    // -- Position
-    float m_x;
-    float m_y;
-    
-    // -- Velocity
-    float m_vx;
-    float m_vy;
-    
-    // -- Acceleration
-    float m_ax;
-    float m_ay;
-
-public:
-
-    Particle()
-    : m_x(0.0),
-      m_y(0.0),
-      m_vx(0.0),
-      m_vy(0.0),
-      m_ax(0.0),
-      m_ay(0.0)
-    {}
-
-    void reset()
-    {
-        // -- Pick a random place along the edge of the surface
-        int pos = random16(SURFACE_WIDTH * 2 + SURFACE_HEIGHT * 2);
-        if (pos < SURFACE_WIDTH) {
-            // -- Top edge
-            m_x = (float) pos;
-            m_y = -1.0;
-        } else if (pos < SURFACE_WIDTH + SURFACE_HEIGHT) {
-            // -- Right edge
-            m_x = (float) (SURFACE_WIDTH + 1);
-            m_y = (float) (pos - SURFACE_WIDTH);
-        } else if (pos < SURFACE_WIDTH + SURFACE_HEIGHT + SURFACE_WIDTH) {
-            // -- Bottom edge
-            m_x = (float) (pos - (SURFACE_WIDTH + SURFACE_HEIGHT));
-            m_y = (float) (SURFACE_HEIGHT + 1);
-        } else {
-            // -- Left edge
-            m_x = -1.0;
-            m_y = (float) (pos - (SURFACE_WIDTH + SURFACE_HEIGHT + SURFACE_WIDTH));
-        }
-    }
-
-    void attract(float attr_x, float attr_y, uint8_t val)
-    {
-        // -- Adjust acceleration based on distance to attractor
-        float dx = (attr_x - m_x);
-        float dy = (attr_y - m_y);
-
-        m_ax = m_ax + (dx / 50.0);
-        m_ay = m_ay + (dy / 50.0);
-    }
-
-    void move()
-    {
-        // -- Update the position using velocity
-        m_x += m_vx;
-        m_y += m_vy;
-
-        // -- Update the velocity using acceleration
-        m_vx += m_ax;
-        m_vy += m_ay;
-
-        // -- Reset the acceleration (which is computed by the attract method)
-        m_ax = 0.0;
-        m_ay = 0.0;
-
-        if (m_vx < 0.5 and m_vy < 0.5) {
-            // -- If a particle stops moving, start it over as a new one
-            reset();
-        }
-    }
-
-    void show()
-    {
-        // -- Color shows velocity
-        int hue = (int) (m_vx * m_vx + m_vy * m_vy);
-
-        int x = (int) m_x;
-        int y = (int) m_y;
-        setSurface(x, y, hue);
-    }
-};
-
-
-Particle g_particles[50];
-
-void ParticleSurface()
+void MirrorSurface()
 {
     
 }
+
 
 // === Main logic ===========================================================
 
@@ -955,9 +989,17 @@ void setup()
         pinMode(LED_PIN, OUTPUT);
         pinMode(IR_INPUT_PIN, INPUT);
     } else {
+        /*
         pinMode(LED_PIN_1, OUTPUT);
         pinMode(LED_PIN_2, OUTPUT);
         pinMode(LED_PIN_3, OUTPUT);
+        */
+        pinMode(17,OUTPUT);
+        pinMode(16,OUTPUT);
+        pinMode(4,OUTPUT);
+        pinMode(2,OUTPUT);
+        pinMode(15,OUTPUT);
+        pinMode(12,OUTPUT);
     
         for (int i = 0; i < 4; i++) {
             pinMode(IR_INPUTS[i], INPUT);
@@ -973,14 +1015,7 @@ void setup()
     delay(200);
 
     // -- Add all the LEDs
-    if (ONE_CELL_MODE) {
-        FastLED.addLeds<CHIPSET, LED_PIN, COLOR_ORDER>(g_LEDs, NUM_LEDS).setCorrection( TypicalLEDStrip );
-    } else {
-        FastLED.addLeds<CHIPSET, LED_PIN_1, COLOR_ORDER>(g_LEDs, NUM_LEDS_1).setCorrection( TypicalLEDStrip );
-        FastLED.addLeds<CHIPSET, LED_PIN_3, COLOR_ORDER>(g_LEDs, NUM_LEDS_1 + NUM_LEDS_2, NUM_LEDS_3).setCorrection( TypicalLEDStrip );
-        FastLED.addLeds<CHIPSET, LED_PIN_2, COLOR_ORDER>(g_LEDs, NUM_LEDS_1, NUM_LEDS_2).setCorrection( TypicalLEDStrip );
-    }
-    
+    LED_setup();
     FastLED.setBrightness(g_Brightness);
 
     // -- Initialize the cells and calibrate
@@ -1003,44 +1038,87 @@ void setup()
 
 uint32_t g_total_time = 0;
 uint32_t g_frame_count = 0;
-int g_center_x = 0;
-int g_center_y = 0;
 
-void loop()
+adel waitbutton(int pin)
 {
-    uint32_t start = millis();
+   abegin:
+   while (1) {
+      await (digitalRead(pin) == HIGH);
+      adelay (50);
+      if (digitalRead(pin) == HIGH) {
+         await (digitalRead(pin) == LOW);
+         afinish;
+      }
+   }
+   aend;
+}
 
-    // if (g_Mode == SurfaceMode) DiffusionSurface();
-    ComputeCenter(g_center_x, g_center_y);
+adel changemode()
+{
+    abegin:
+    while (1) {
+        andthen( waitbutton( MODE_PIN ) );
 
-    // -- Sense the IR and render the pattern
-    for (int i = 0; i < NUM_CELLS; i++) {
-        if (g_Mode == SolidMode)    g_Cells[i]->SolidPattern();
-        if (g_Mode == ConfettiMode) g_Cells[i]->ConfettiPattern();
-        if (g_Mode == SpinnerMode)  g_Cells[i]->SpinnerPattern(400, 8000);
-        if (g_Mode == GearMode)     g_Cells[i]->GearPattern(400, 8000);
-        if (g_Mode == FireMode)     g_Cells[i]->FirePattern(30, 50);
-        if (g_Mode == SurfaceMode)  g_Cells[i]->SurfacePattern();
-        if (g_Mode == AttractorMode)  g_Cells[i]->AttractorPattern(g_center_x, g_center_y);
-    }
-
-    if (g_Cycle) {
-        // -- Periodically switch to a different mode
-        uint32_t cur_time = millis();
-        if (cur_time - last_change > TIME_PER_PATTERN) {
-            last_change = cur_time;
-            if (g_Mode == SolidMode)         changeToPattern(ConfettiMode);
-            else if (g_Mode == ConfettiMode) changeToPattern(SpinnerMode);
-            else if (g_Mode == SpinnerMode)  changeToPattern(GearMode);
-            else if (g_Mode == GearMode)     changeToPattern(FireMode);
-            else if (g_Mode == FireMode)     changeToPattern(SolidMode);
-        }
+        g_Mode = Mode((g_Mode + 1) % NUM_MODES);
+        changeToPattern(g_Mode);
+        /*
+        if (g_Mode == SolidMode)         changeToPattern(ConfettiMode);
+        else if (g_Mode == ConfettiMode) changeToPattern(SpinnerMode);
+        else if (g_Mode == SpinnerMode)  changeToPattern(GearMode);
+        else if (g_Mode == GearMode)     changeToPattern(FireMode);
+        else if (g_Mode == FireMode)     changeToPattern(SolidMode);
+        */
     }
     
-    FastLED.show();
-    uint32_t end = millis();
-    g_total_time += (end - start);
-    g_frame_count++;
+    aend;
+}
+    
+adel table()
+{
+    uint32_t start;
+    uint32_t end;
+    bool is_surface;
+  abegin:
+
+    while (1) {
+        start = millis();
+        is_surface = (g_Mode >= SurfaceMode);
+
+        if (is_surface) {
+            if (g_Mode == SurfaceMode)   CenterSurface();
+            if (g_Mode == RippleMode)    RippleSurface();
+            if (g_Mode == DiffusionMode) DiffusionSurface();
+            if (g_Mode == AttractorMode) AttractorSurface();
+            if (g_Mode == MirrorMode)    MirrorSurface();
+        }
+
+        // -- Sense the IR and render the pattern
+        for (int i = 0; i < NUM_CELLS; i++) {
+            if (g_Mode == SolidMode)    g_Cells[i]->SolidPattern();
+            if (g_Mode == ConfettiMode) g_Cells[i]->ConfettiPattern();
+            if (g_Mode == SpinnerMode)  g_Cells[i]->SpinnerPattern(400, 8000);
+            if (g_Mode == GearMode)     g_Cells[i]->GearPattern(400, 8000);
+            if (g_Mode == FireMode)     g_Cells[i]->FirePattern(30, 50);
+            if (is_surface)             g_Cells[i]->SurfacePattern();
+        }
+
+        if (g_Cycle) {
+            // -- Periodically switch to a different mode
+            uint32_t cur_time = millis();
+            if (cur_time - last_change > TIME_PER_PATTERN) {
+                last_change = cur_time;
+                if (g_Mode == SolidMode)         changeToPattern(ConfettiMode);
+                else if (g_Mode == ConfettiMode) changeToPattern(SpinnerMode);
+                else if (g_Mode == SpinnerMode)  changeToPattern(GearMode);
+                else if (g_Mode == GearMode)     changeToPattern(FireMode);
+                else if (g_Mode == FireMode)     changeToPattern(SolidMode);
+            }
+        }
+    
+        FastLED.show();
+        end = millis();
+        g_total_time += (end - start);
+        g_frame_count++;
 
     /** Just for testing: compute the time to render a frame
     if (g_frame_count == 40) {
@@ -1051,6 +1129,15 @@ void loop()
         g_total_time = 0;
     }
     */
+    
+        adelay(1000/FRAMES_PER_SECOND);
+    }
+    
+    aend;
+}
 
-    delay(1000/FRAMES_PER_SECOND);
+void loop()
+{
+    arepeat( table() );
+    arepeat( changemode() );
 }

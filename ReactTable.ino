@@ -22,20 +22,6 @@ const int TIME_PER_PATTERN = 15000;
 
 #define MODE_PIN 14
 
-// === One-cell pin settings ================================================
-
-/** One cell mode
- *  
- *  If you only have one cell, then you only need two pins: one pin to read 
- *  the IR analog input and one pin to drive the LED ring. You can ignore the
- *  rest of the configuration.
- */
-
- #define ONE_CELL_MODE false
-
- #define IR_INPUT_PIN 27
- #define LED_PIN 26
-
  // === Multi-cell pin settings ==============================================
 
 /** IR channel selector
@@ -234,7 +220,8 @@ void computePixelOffsets()
         g_SurfaceSamples[i].top_right_part = top_right;
         g_SurfaceSamples[i].bottom_left_part = bottom_left;
         g_SurfaceSamples[i].bottom_right_part = bottom_right;
-        
+
+        /*
         Serial.print("Pixel "); Serial.print(i); Serial.print(" at ");
         Serial.print(x); Serial.print(" , "); Serial.print(y);
         Serial.print(" : \n");
@@ -246,6 +233,7 @@ void computePixelOffsets()
         Serial.print("    Top right    : "); Serial.print(top_right);
         Serial.print("    Bottom left  : "); Serial.print(bottom_left);
         Serial.print("    Bottom right : "); Serial.print(bottom_right); Serial.println();
+        */
     }        
 }
 
@@ -342,18 +330,14 @@ public:
     {
         uint16_t val;
         
-        if (ONE_CELL_MODE) {
-            val = analogRead(IR_INPUT_PIN);
-        } else {
-            // -- Select the channel
-            digitalWrite(IR_CHANNEL_BIT_0, m_ir_channel_selector[0]);
-            digitalWrite(IR_CHANNEL_BIT_1, m_ir_channel_selector[1]);
-            digitalWrite(IR_CHANNEL_BIT_2, m_ir_channel_selector[2]);
-            digitalWrite(IR_CHANNEL_BIT_3, m_ir_channel_selector[3]);
+        // -- Select the channel
+        digitalWrite(IR_CHANNEL_BIT_0, m_ir_channel_selector[0]);
+        digitalWrite(IR_CHANNEL_BIT_1, m_ir_channel_selector[1]);
+        digitalWrite(IR_CHANNEL_BIT_2, m_ir_channel_selector[2]);
+        digitalWrite(IR_CHANNEL_BIT_3, m_ir_channel_selector[3]);
 
-            // -- Finally, read the analog value
-            val = analogRead(IR_INPUTS[m_ir_input]);
-        }
+        // -- Finally, read the analog value
+        val = analogRead(IR_INPUTS[m_ir_input]);
         
         return val;
     }
@@ -949,14 +933,8 @@ void calibrate()
 
 void initialize()
 {
-    // -- Create all the cell objects
-    if (ONE_CELL_MODE) {
-        CellMapEntry one = {0, 0, 0, 0};
-        g_Cells[0] = new Cell(one);
-    } else {
-        for (int i = 0; i < NUM_CELLS; i++) {
-            g_Cells[i] = new Cell(g_CellMap[i]);
-        }
+    for (int i = 0; i < NUM_CELLS; i++) {
+        g_Cells[i] = new Cell(g_CellMap[i]);
     }
     
     // -- Calibrate the IR sensors
@@ -984,32 +962,27 @@ void setup()
 {
     delay(500);
 
-    // -- Set up the pins
-    if (ONE_CELL_MODE) {
-        pinMode(LED_PIN, OUTPUT);
-        pinMode(IR_INPUT_PIN, INPUT);
-    } else {
-        /*
-        pinMode(LED_PIN_1, OUTPUT);
-        pinMode(LED_PIN_2, OUTPUT);
-        pinMode(LED_PIN_3, OUTPUT);
-        */
-        pinMode(17,OUTPUT);
-        pinMode(16,OUTPUT);
-        pinMode(4,OUTPUT);
-        pinMode(2,OUTPUT);
-        pinMode(15,OUTPUT);
-        pinMode(12,OUTPUT);
-    
-        for (int i = 0; i < 4; i++) {
-            pinMode(IR_INPUTS[i], INPUT);
-        }
+// -- Set up the pins
+    /*
+    pinMode(LED_PIN_1, OUTPUT);
+    pinMode(LED_PIN_2, OUTPUT);
+    pinMode(LED_PIN_3, OUTPUT);
+    */
+    pinMode(17,OUTPUT);
+    pinMode(16,OUTPUT);
+    pinMode(4,OUTPUT);
+    pinMode(2,OUTPUT);
+    pinMode(15,OUTPUT);
+    pinMode(12,OUTPUT);
 
-        pinMode(IR_CHANNEL_BIT_0, OUTPUT);
-        pinMode(IR_CHANNEL_BIT_1, OUTPUT);
-        pinMode(IR_CHANNEL_BIT_2, OUTPUT);
-        pinMode(IR_CHANNEL_BIT_3, OUTPUT);
+    for (int i = 0; i < 4; i++) {
+        pinMode(IR_INPUTS[i], INPUT);
     }
+
+    pinMode(IR_CHANNEL_BIT_0, OUTPUT);
+    pinMode(IR_CHANNEL_BIT_1, OUTPUT);
+    pinMode(IR_CHANNEL_BIT_2, OUTPUT);
+    pinMode(IR_CHANNEL_BIT_3, OUTPUT);
 
     Serial.begin(115200);
     delay(200);
